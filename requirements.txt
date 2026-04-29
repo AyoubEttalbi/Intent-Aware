@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+playwright
+anthropic
+psycopg2-binary
+networkx
+openapi-spec-validator
+python-dotenv
+sqlalchemy
+requests

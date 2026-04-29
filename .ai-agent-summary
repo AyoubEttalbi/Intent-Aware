@@ -1,0 +1,30 @@
+# AI Agent Project Summary — Intent-Aware Autonomous QA Agent
+
+## Project Overview
+An autonomous, intent-aware QA agent that bridges the gap between UI exploration and API security auditing. It uses a "Shadow Spec" (discovered via UI crawling) to supplement official OpenAPI specs and applies a multi-layered detection strategy to identify functional and security bugs.
+
+## 🚀 Latest Milestones (COMPLETED)
+- **Phase 7: Web UI Discovery**: Playwright crawler with backtracking and visual status overlay.
+- **Phase 8: Intelligent Form Fuzzing**: Contextual form analysis using LLM to generate realistic/adversarial input values right before button interactions.
+- **Hardening & Rules Alignment**: Integrated a comprehensive `rules.md` governance layer. The agent now prioritizes high-impact security bugs and uses a high-precision LLM Judge to eliminate false positives (e.g., distinguishing security blocks from crashes).
+- **Shadow Spec Integration**: Discovered endpoints are now merged into the analysis pipeline to test "hidden" or undocumented API paths.
+
+## 🛠️ Technical Architecture
+- **Agent Loop**: `agent/loop.py` (Handles Shadow Spec merging and intent-based orchestration).
+- **Intelligent Crawler**: `execution/crawler.py` (Contextual form filling, network sniffing, and unique UI bug deduplication).
+- **LLM Judge**: `detection/layer3_llm_judge.py` (Rules-aware semantic validation).
+- **Governance**: `rules.md` (Defines the decision-making logic for the agent).
+
+## 📂 Project Structure
+- `api/`: Job orchestration API.
+- `agent/`: Orchestration and LLM client.
+- `extractors/`: Intent and Assumption extraction (Rules-aligned).
+- `generators/`: Atomic adversarial scenario generation.
+- `execution/`: UI Crawler and HTTP Runner.
+- `detection/`: Multi-layer bug detection (Contract, Comparison, LLM-Judge).
+- `reports/`: Differentiated reporting (Confirmed Bugs vs. Potential Issues).
+
+## 📝 Resumption Notes
+- **Vibe Check**: The agent now acts like a Senior Security Auditor—focused, precise, and less "noisy."
+- **Execution**: Run `python run_demo.py`. Check `latest_report.md` for prioritized findings and `crawler_log.txt` for the "thought process" behind form filling.
+- **Next Steps**: Implement multi-user persona testing (simulating Admin vs. User vs. Attacker) for cross-user data leakage detection.

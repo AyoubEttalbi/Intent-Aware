@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Project specific
+qa_agent.db
+crawler_log.txt
+latest_report.md
+test_results.json
+.vscode/
+.idea/
