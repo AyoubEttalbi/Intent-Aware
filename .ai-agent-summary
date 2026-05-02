@@ -1,30 +1,34 @@
-# AI Agent Project Summary — Intent-Aware Autonomous QA Agent
+# AI Agent Project Summary — Intent-Aware Autonomous QA Agent (Hardened)
 
 ## Project Overview
-An autonomous, intent-aware QA agent that bridges the gap between UI exploration and API security auditing. It uses a "Shadow Spec" (discovered via UI crawling) to supplement official OpenAPI specs and applies a multi-layered detection strategy to identify functional and security bugs.
+An autonomous, production-grade security auditor that bridges the gap between source code analysis, UI exploration, and adversarial API probing. It uses a multi-phase pipeline to identify functional and security vulnerabilities with high precision and low resource overhead.
 
 ## 🚀 Latest Milestones (COMPLETED)
-- **Phase 7: Web UI Discovery**: Playwright crawler with backtracking and visual status overlay.
-- **Phase 8: Intelligent Form Fuzzing**: Contextual form analysis using LLM to generate realistic/adversarial input values right before button interactions.
-- **Hardening & Rules Alignment**: Integrated a comprehensive `rules.md` governance layer. The agent now prioritizes high-impact security bugs and uses a high-precision LLM Judge to eliminate false positives (e.g., distinguishing security blocks from crashes).
-- **Shadow Spec Integration**: Discovered endpoints are now merged into the analysis pipeline to test "hidden" or undocumented API paths.
+- **Phase 0: Source Code Analysis**: Automated derivation of routes, models, auth flows, and personas directly from local source files (`agent/source_analyzer.py`).
+- **Hardened UI Discovery**: Production-grade crawler with priority-based URL queues, DOM-settle waiting, and structured `UIContext` extraction (`execution/crawler.py`).
+- **Scenario Deduplication**: Intelligent layer that fingerprints tests by `(pattern, attack, field)` and keeps only the highest-severity scenarios to optimize execution (`generators/dedup.py`).
+- **Unified Data Models**: Centralized source of truth for `AppContext`, `PageContext`, and `Scenario` objects to ensure type-safe orchestration (`agent/models.py`).
+- **Async Pipeline Orchestration**: Fully asynchronous multi-phase execution loop in `agent/loop.py`.
 
 ## 🛠️ Technical Architecture
-- **Agent Loop**: `agent/loop.py` (Handles Shadow Spec merging and intent-based orchestration).
-- **Intelligent Crawler**: `execution/crawler.py` (Contextual form filling, network sniffing, and unique UI bug deduplication).
+- **Phase 0 (Analysis)**: `agent/source_analyzer.py` (Builds global `AppContext`).
+- **Phase 1 (Discovery)**: `execution/crawler.py` ( hard-timeouts, priority queues, form metadata).
+- **Phase 2 (Assumption)**: `extractors/assumptions.py` (UI-context-aware implicit reasoning).
+- **Phase 3 (Generation)**: `generators/scenarios.py` (Field-level targeted adversarial payloads).
+- **Phase 4 (Execution)**: `agent/loop.py` (Async orchestrator with deduplication).
 - **LLM Judge**: `detection/layer3_llm_judge.py` (Rules-aware semantic validation).
-- **Governance**: `rules.md` (Defines the decision-making logic for the agent).
 
 ## 📂 Project Structure
-- `api/`: Job orchestration API.
-- `agent/`: Orchestration and LLM client.
-- `extractors/`: Intent and Assumption extraction (Rules-aligned).
-- `generators/`: Atomic adversarial scenario generation.
-- `execution/`: UI Crawler and HTTP Runner.
-- `detection/`: Multi-layer bug detection (Contract, Comparison, LLM-Judge).
-- `reports/`: Differentiated reporting (Confirmed Bugs vs. Potential Issues).
+- `api/`: Job orchestration API (handles async background tasks).
+- `agent/`: Source analysis, state management, and unified models.
+- `extractors/`: Intent and Assumption extraction (Context-aware).
+- `generators/`: Atomic scenario generation and deduplication logic.
+- `execution/`: Hardened UI Crawler and HTTP Runner.
+- `detection/`: Multi-layer bug detection (Contract, Behavioral, LLM-Judge).
+- `target_app/`: Reference vulnerable application for testing.
 
 ## 📝 Resumption Notes
-- **Vibe Check**: The agent now acts like a Senior Security Auditor—focused, precise, and less "noisy."
-- **Execution**: Run `python run_demo.py`. Check `latest_report.md` for prioritized findings and `crawler_log.txt` for the "thought process" behind form filling.
-- **Next Steps**: Implement multi-user persona testing (simulating Admin vs. User vs. Attacker) for cross-user data leakage detection.
+- **Senior Auditor Status**: The agent now identifies cross-user leaks (IDOR) and mass-assignment bugs by analyzing code and UI context simultaneously.
+- **Execution**: Run `python -m target_app.main` and `python run_demo.py`. Check `latest_report.md` for prioritized findings.
+- **Stability**: Automated stability tests are located in `tests/test_crawler_stability.py`.
+- **Next Steps**: Implement multi-role RBAC testing where the agent automatically switches between authenticated personas to verify permission boundaries.

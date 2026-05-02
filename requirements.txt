@@ -8,3 +8,4 @@ openapi-spec-validator
 python-dotenv
 sqlalchemy
 requests
+aiohttp

@@ -14,6 +14,7 @@ class AnalysisRequest(BaseModel):
     spec_url: str
     description: str
     base_url: str
+    source_dir: Optional[str] = "."
     max_assumptions: Optional[int] = 2
     crawl_ui: Optional[bool] = False
 
@@ -21,11 +22,15 @@ class AnalysisResponse(BaseModel):
     job_id: str
     status: str
 
-def run_analysis_task(job_id: str, request: AnalysisRequest):
+async def run_analysis_task(job_id: str, request: AnalysisRequest):
     db = SessionLocal()
     try:
         loop = AgentLoop(request.spec_url, request.description, request.base_url)
-        results = loop.run(max_assumptions=request.max_assumptions, crawl_ui=request.crawl_ui)
+        results = await loop.run(
+            max_assumptions=request.max_assumptions, 
+            crawl_ui=request.crawl_ui,
+            source_dir=request.source_dir
+        )
         
         job = db.query(Job).filter(Job.id == job_id).first()
         if job:

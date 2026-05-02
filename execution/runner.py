@@ -20,7 +20,6 @@ class TestRunner:
     def execute(self, scenario: Dict[str, Any], auth_config: Optional[Dict[str, str]] = None) -> TestResponse:
         """
         Executes a test scenario.
-        auth_config: {"type": "bearer", "token": "..."} or {"type": "apikey", "name": "X-API-Key", "value": "..."}
         """
         method = scenario.get("method", "GET").upper()
         endpoint = scenario.get("endpoint", "")
@@ -28,9 +27,24 @@ class TestRunner:
             endpoint = "/" + endpoint
             
         url = f"{self.base_url}{endpoint}"
-        headers = scenario.get("headers", {})
+        raw_headers = scenario.get("headers", {})
+        headers = {}
+        if isinstance(raw_headers, dict):
+            headers = {k: v for k, v in raw_headers.items() if v is not None}
         
-        # Handle Auth
+        # Handle Persona-based Auth
+        persona_name = scenario.get("persona_name")
+        if persona_name:
+            from agent.personas import PersonaManager
+            pm = PersonaManager()
+            persona = pm.get_persona(persona_name)
+            if persona and persona.token:
+                headers["Authorization"] = f"Bearer {persona.token}"
+            elif persona_name == "GUEST":
+                if "Authorization" in headers:
+                    del headers["Authorization"]
+        
+        # Legacy/Manual Auth Override
         if auth_config:
             if auth_config.get("type") == "bearer":
                 headers["Authorization"] = f"Bearer {auth_config['token']}"
@@ -40,7 +54,6 @@ class TestRunner:
             elif auth_config.get("type") == "custom":
                 headers.update(auth_config.get("headers", {}))
 
-        
         body = scenario.get("body")
 
         start_time = time.perf_counter()
@@ -56,7 +69,6 @@ class TestRunner:
             
             latency = (time.perf_counter() - start_time) * 1000
             
-            # Try to parse JSON body, fallback to text
             try:
                 resp_body = response.json()
             except:
