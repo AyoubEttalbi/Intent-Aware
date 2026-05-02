@@ -24,9 +24,11 @@ class StateGraph:
         """
         Checks if a specific request has already been executed.
         """
-        # Create a unique key for the request
-        # We simplify params for the key (usually sorting keys)
-        param_str = str(sorted(params.items())) if params else ""
+        if isinstance(params, dict):
+            param_str = str(sorted(params.items()))
+        else:
+            param_str = str(params) if params else ""
+            
         path_key = f"{method}:{endpoint}:{param_str}"
         return path_key in self.explored_paths
 
@@ -34,7 +36,11 @@ class StateGraph:
         """
         Marks a request as explored.
         """
-        param_str = str(sorted(params.items())) if params else ""
+        if isinstance(params, dict):
+            param_str = str(sorted(params.items()))
+        else:
+            param_str = str(params) if params else ""
+            
         path_key = f"{method}:{endpoint}:{param_str}"
         self.explored_paths.add(path_key)
 

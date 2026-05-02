@@ -50,6 +50,7 @@ def main():
         "spec_url": "http://localhost:8080/openapi.json",
         "description": "A user management and ordering system. Users should only see their own data and cannot escalate privileges.",
         "base_url": "http://localhost:8080",
+        "source_dir": "target_app",
         "max_assumptions": 3,
         "crawl_ui": True
     }
