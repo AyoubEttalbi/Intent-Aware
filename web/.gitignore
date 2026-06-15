@@ -1,0 +1,16 @@
+# dependencies & build output
+node_modules
+dist
+.browsers
+
+# tooling artifacts
+.omc
+*.tsbuildinfo
+
+# tsc -b emits these from vite.config.ts — build artifacts, not source
+vite.config.js
+vite.config.d.ts
+
+# local env
+.env
+.env.local
