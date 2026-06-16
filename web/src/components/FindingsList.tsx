@@ -19,7 +19,7 @@ const FindingsList = forwardRef<FindingsListHandle, { findings: Finding[] }>(({ 
       const scroll = (el: HTMLDivElement) => {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
         el.animate(
-          [{ boxShadow: "0 0 0 2px rgba(110,121,229,0.75)" }, { boxShadow: "0 0 0 0 rgba(110,121,229,0)" }],
+          [{ boxShadow: "0 0 0 2px rgba(161,161,170,0.8)" }, { boxShadow: "0 0 0 0 rgba(161,161,170,0)" }],
           { duration: 1400 }
         );
       };

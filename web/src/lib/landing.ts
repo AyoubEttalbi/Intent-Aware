@@ -37,12 +37,12 @@ export const STEPS: Step[] = [
   {
     n: "01",
     title: "Point it at your app",
-    body: "Just a URL. Optionally add a one-line description, an OpenAPI spec, or logins to test behind auth — everything else is auto-discovered.",
+    body: "Just a URL. Optionally add a one-line description, an OpenAPI spec, or logins to test behind auth. Everything else is auto-discovered.",
   },
   {
     n: "02",
     title: "It explores, then attacks",
-    body: "It crawls like a QA engineer — pages, forms, journeys — then runs 16 effect-oracle detectors across every role, proving each issue by real exploitation, not a status code.",
+    body: "It crawls like a QA engineer across pages, forms, and journeys, then runs 16 effect-oracle detectors across every role. Each issue is proven by real exploitation, not a status code.",
   },
   {
     n: "03",

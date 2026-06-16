@@ -125,30 +125,21 @@ export default function App() {
                         >
                           Point it at any app.
                           <br />
-                          Ship with <span className="text-accent">conviction</span>.
+                          Ship with <span className="font-medium italic">conviction</span>.
                         </motion.h1>
                         <motion.p
                           variants={heroItem}
                           className="track-tight mx-auto mt-5 max-w-xl text-pretty text-base leading-relaxed text-fg-muted sm:text-lg"
                         >
                           It explores like a QA engineer, attacks like a pentester, and explains every bug in
-                          plain language — with a copy-paste repro you can verify.
+                          plain language, with a copy-paste repro you can verify.
                         </motion.p>
-                      </motion.div>
-
-                      <motion.div
-                        variants={heroItem}
-                        initial="hidden"
-                        animate="show"
-                        className="mb-6 w-full max-w-xl"
-                      >
-                        <DetectorMarquee />
                       </motion.div>
 
                       <motion.div
                         initial={{ opacity: 0, y: reduce ? 0 : 18 }}
                         animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: reduce ? 0 : 0.35, duration: 0.5 }}
+                        transition={{ delay: reduce ? 0 : 0.3, type: "spring", stiffness: 90, damping: 18 }}
                         className="w-full"
                       >
                         <ScanForm onLaunch={(r) => start(r)} onDemo={() => start(null)} busy={false} />
@@ -177,7 +168,12 @@ export default function App() {
             {/* ── Story sections (idle only — hidden while a scan runs) ── */}
             {phase === "idle" && (
               <>
-                <div className="mx-auto max-w-content space-y-24 px-4 pb-10 sm:px-6">
+                {/* detector ticker — the "what it catches" strip lives UNDER the
+                    hero, never inside it (taste-skill hero-stack discipline) */}
+                <div className="border-y border-line bg-surface/30 py-5">
+                  <DetectorMarquee />
+                </div>
+                <div className="mx-auto max-w-content space-y-28 px-4 pb-10 pt-24 sm:px-6">
                   <StatStrip />
                   <HowItWorks />
                   <WhatItCatches />

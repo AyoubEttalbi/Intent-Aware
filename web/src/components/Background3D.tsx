@@ -9,13 +9,13 @@ export type SceneMode = "idle" | "scanning" | "done";
 const prefersReducedMotion =
   typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
-/* The single chromatic accent is lavender. Red is gone everywhere.
-   While working the core pulses a brighter lavender; on a verdict it adopts the
-   grade colour. Idle = the brand lavender, quietly breathing. */
+/* Monochrome core. The chrome carries no colour — the only colour the core ever
+   takes is the GRADE hue on a verdict (meaningful, not decorative). Idle/scanning
+   are pure neutral: near-white on dark, near-black zinc on light. */
 function coreColor(mode: SceneMode, grade: Grade | undefined, isDark: boolean): THREE.Color {
   if (mode === "done" && grade) return new THREE.Color(GRADE_META[grade].hex);
-  if (mode === "scanning") return new THREE.Color(isDark ? "#8b96ff" : "#5e6ad2");
-  return new THREE.Color(isDark ? "#6e79e5" : "#4f5bc4");
+  if (mode === "scanning") return new THREE.Color(isDark ? "#fafafa" : "#3f3f46");
+  return new THREE.Color(isDark ? "#d4d4d8" : "#71717a");
 }
 
 /* ── Classic Ashima simplex noise (snoise) — inlined so the core can displace
@@ -113,8 +113,8 @@ function makeCoreMaterial(wireframe: boolean) {
       uTime: { value: 0 },
       uAmp: { value: 0.16 },
       uFreq: { value: 1.5 },
-      uColor: { value: new THREE.Color("#6e79e5") },
-      uRim: { value: new THREE.Color("#aab2ff") },
+      uColor: { value: new THREE.Color("#d4d4d8") },
+      uRim: { value: new THREE.Color("#ffffff") },
       uOpacity: { value: 1 },
       uRimPower: { value: 2.2 },
     },
@@ -127,13 +127,13 @@ function Core({ mode, grade, isDark }: { mode: SceneMode; grade?: Grade; isDark:
   const solidMat = useMemo(() => makeCoreMaterial(false), []);
   const wireMat = useMemo(() => {
     const m = makeCoreMaterial(true);
-    m.uniforms.uOpacity.value = isDark ? 0.6 : 0.5;
+    m.uniforms.uOpacity.value = isDark ? 0.6 : 0.3;
     m.uniforms.uRimPower.value = 1.6;
     return m;
   }, [isDark]);
 
   const target = useMemo(() => coreColor(mode, grade, isDark), [mode, grade, isDark]);
-  const rim = useMemo(() => new THREE.Color(isDark ? "#c2c8ff" : "#7c86e8"), [isDark]);
+  const rim = useMemo(() => new THREE.Color(isDark ? "#ffffff" : "#a1a1aa"), [isDark]);
 
   useFrame((state, delta) => {
     const t = state.clock.elapsedTime;
@@ -146,7 +146,7 @@ function Core({ mode, grade, isDark }: { mode: SceneMode; grade?: Grade; isDark:
       (m.uniforms.uRim.value as THREE.Color).lerp(rim, Math.min(1, delta * 3));
     }
     // translucent core — the wireframe carries the structure, the shell only tints
-    solidMat.uniforms.uOpacity.value = isDark ? 0.4 : 0.15;
+    solidMat.uniforms.uOpacity.value = isDark ? 0.4 : 0.1;
     if (group.current && !prefersReducedMotion) {
       group.current.rotation.y += delta * (working ? 0.32 : 0.08);
       group.current.rotation.x = Math.sin(t * 0.15) * 0.18;
@@ -176,7 +176,7 @@ function ParticleShell({ mode, isDark }: { mode: SceneMode; isDark: boolean }) {
     }
     return arr;
   }, []);
-  const color = useMemo(() => new THREE.Color(isDark ? "#6e79e5" : "#4f5bc4"), [isDark]);
+  const color = useMemo(() => new THREE.Color(isDark ? "#a1a1aa" : "#71717a"), [isDark]);
 
   useFrame((_, delta) => {
     if (!ref.current || prefersReducedMotion) return;

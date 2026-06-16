@@ -59,9 +59,8 @@ export function HowItWorks() {
   const icons = [Crosshair, ShieldCheck, FileText];
   return (
     <section className="w-full">
-      <Reveal className="mb-8 text-center">
-        <span className="eyebrow">How it works</span>
-        <h2 className="mx-auto mt-3 max-w-2xl font-display text-3xl font-semibold leading-tight text-fg track-display sm:text-4xl">
+      <Reveal className="mb-10 text-center">
+        <h2 className="mx-auto max-w-2xl font-display text-3xl font-semibold leading-tight text-fg track-display sm:text-[2.6rem]">
           From a URL to a verdict in one run.
         </h2>
       </Reveal>
@@ -92,13 +91,12 @@ export function HowItWorks() {
 export function WhatItCatches() {
   return (
     <section className="w-full">
-      <Reveal className="mb-8 text-center">
-        <span className="eyebrow">What it catches</span>
-        <h2 className="mx-auto mt-3 max-w-2xl font-display text-3xl font-semibold leading-tight text-fg track-display sm:text-4xl">
+      <Reveal className="mb-10 text-center">
+        <h2 className="mx-auto max-w-2xl font-display text-3xl font-semibold leading-tight text-fg track-display sm:text-[2.6rem]">
           Sixteen detectors. Every one proves itself.
         </h2>
-        <p className="mx-auto mt-3 max-w-xl text-sm text-fg-muted">
-          No detector ships a finding on a status code alone — each confirms real exploitation with a
+        <p className="mx-auto mt-4 max-w-xl text-pretty text-[15px] leading-relaxed text-fg-muted">
+          No detector ships a finding on a status code alone. Each one confirms real exploitation with a
           differential baseline, a marker reflection, a timing delay, or a persisted read-back.
         </p>
       </Reveal>
