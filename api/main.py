@@ -1,4 +1,5 @@
 import os
+import re
 import glob
 import shutil
 import time
@@ -51,8 +52,64 @@ def _prune_artifacts(root: str = "artifacts", keep: int = 25):
         pass  # best-effort hygiene — never fail a job over cleanup
 
 
+# ── Live progress ────────────────────────────────────────────────────────────
+# The engine logs free-form phase lines. We capture them per job so /status can
+# stream the REAL activity to the UI (instead of a fake, time-driven animation
+# that always parks on "writing report"). Dropped when the job ends.
+_PROGRESS: Dict[str, Dict[str, Any]] = {}
+_PROGRESS_LOCK = threading.Lock()
+
+
+_PHASE_RANK = {"discover": 0, "crawl": 1, "identities": 2, "attack": 3, "verify": 4, "report": 5}
+
+
+def _derive_phase(msg: str, prev_phase: str, prev_pct: float):
+    m = msg.lower()
+    phase, pct = prev_phase, prev_pct
+    if "qa page" in m or "qa crawl" in m or "🧭" in msg or "🔎" in msg:
+        mm = re.search(r"page (\d+)/(\d+)", m)
+        phase = "crawl"
+        pct = 0.14 + 0.16 * (int(mm.group(1)) / max(1, int(mm.group(2)))) if mm else 0.16
+    elif "discover" in m or "discovered" in m or "🔍" in msg:
+        phase, pct = "discover", 0.08
+    elif "run also as" in m or "🔑" in msg or "harvest" in m or "logging in" in m or "identit" in m:
+        phase, pct = "identities", 0.34
+    elif "attack matrix" in m or "⚔️" in msg:
+        phase, pct = "attack", 0.5
+    elif "writing explanations" in m or "scoring" in m or "explain" in m or "✨" in msg:
+        phase, pct = "report", 0.9
+    # 🚩 findings and other chatter don't change the phase — only the live log.
+    # Never regress the phase, so the stage indicator only moves forward.
+    if _PHASE_RANK.get(phase, 0) < _PHASE_RANK.get(prev_phase, 0):
+        phase = prev_phase
+    return phase, max(prev_pct, pct)
+
+
+def _job_logger(job_id: str):
+    """Engine log sink: prints (journald) AND records the line for live /status."""
+    def _log(msg=""):
+        try:
+            print(msg, flush=True)
+        except Exception:
+            pass
+        s = str(msg)
+        if not s.strip():
+            return
+        with _PROGRESS_LOCK:
+            p = _PROGRESS.get(job_id)
+            if p is None:
+                return
+            p["lines"].append(s)
+            del p["lines"][:-14]   # keep the last 14 lines
+            p["phase"], p["pct"] = _derive_phase(s, p["phase"], p["pct"])
+            p["updated"] = time.time()
+    return _log
+
+
 def run_analysis_task(job_id: str, request: AnalysisRequest):
     db = SessionLocal()
+    with _PROGRESS_LOCK:
+        _PROGRESS[job_id] = {"phase": "discover", "pct": 0.02, "lines": [], "updated": time.time()}
     try:
         # Server-side resume: load a prior job's run context if asked.
         resume_context = request.resume_context
@@ -77,6 +134,7 @@ def run_analysis_task(job_id: str, request: AnalysisRequest):
             extra_hosts=request.extra_hosts,
             llm_model=request.model,
             llm_effort=request.effort,
+            log=_job_logger(job_id),            # stream real phase lines to /status
             output_dir=f"artifacts/{job_id}",   # per-job artifacts: no cross-job clobber
         )
         res = engine.run()
@@ -110,6 +168,8 @@ def run_analysis_task(job_id: str, request: AnalysisRequest):
     finally:
         db.close()
         _prune_artifacts()   # bound the data dir after every job
+        with _PROGRESS_LOCK:
+            _PROGRESS.pop(job_id, None)
 
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze(request: AnalysisRequest, background_tasks: BackgroundTasks):
@@ -139,14 +199,19 @@ async def get_status(job_id: str):
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
+    with _PROGRESS_LOCK:
+        prog = _PROGRESS.get(job_id)
+        progress = {"phase": prog["phase"], "pct": prog["pct"], "lines": list(prog["lines"])} if prog else None
+
     return {
         "job_id": job.id,
         "status": job.status,
         "created_at": job.created_at,
         "completed_at": job.completed_at,
         "results": job.results,
-        "error": job.error
+        "error": job.error,
+        "progress": progress,
     }
 
 # ── Per-test chat sessions ────────────────────────────────────────────────

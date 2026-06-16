@@ -2,6 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Check, Loader2, Radar, X } from "lucide-react";
 import { cn } from "../lib/ui";
+import type { JobProgress } from "../lib/types";
+
+// Backend phase -> which of the 5 visible stages is "active".
+const PHASE_TO_STAGE: Record<string, number> = {
+  discover: 0,
+  crawl: 0,
+  identities: 1,
+  attack: 2,
+  verify: 3,
+  report: 4,
+};
 
 const STAGES = [
   { key: "discover", label: "Discovering surface", detail: "OpenAPI + UI crawl + GraphQL" },
@@ -32,16 +43,23 @@ export default function ScanProgress({
   onCancel,
   target,
   demo,
+  progress,
 }: {
   elapsedMs: number;
   onCancel: () => void;
   target: string;
   demo: boolean;
+  progress?: JobProgress | null;
 }) {
-  // Drive stage progression off elapsed time (best-effort visual; backend is opaque while polling).
+  // Prefer REAL backend progress when the server reports it; fall back to a
+  // time-driven estimate only until the first real update arrives (and for demo).
+  const hasReal = !demo && !!progress && progress.lines.length > 0;
   const cycle = demo ? 5200 : 60000;
-  const progress = Math.min(0.985, elapsedMs / cycle);
-  const activeStage = Math.min(STAGES.length - 1, Math.floor(progress * STAGES.length));
+  const timePct = Math.min(0.985, elapsedMs / cycle);
+  const barPct = hasReal ? Math.min(0.985, Math.max(0.02, progress!.pct)) : timePct;
+  const activeStage = hasReal
+    ? PHASE_TO_STAGE[progress!.phase] ?? Math.min(STAGES.length - 1, Math.floor(timePct * STAGES.length))
+    : Math.min(STAGES.length - 1, Math.floor(timePct * STAGES.length));
 
   const [log, setLog] = useState<string[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
@@ -61,9 +79,11 @@ export default function ScanProgress({
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
-  }, [log]);
+  }, [log, progress?.lines.length]);
 
   const seconds = useMemo(() => (elapsedMs / 1000).toFixed(1), [elapsedMs]);
+  // Real engine lines once the server reports them; the canned reel only animates pre-first-poll / demo.
+  const shownLog = (hasReal ? progress!.lines : log).slice(-9);
 
   return (
     <motion.div
@@ -94,7 +114,7 @@ export default function ScanProgress({
       <div className="relative mb-6 h-1.5 overflow-hidden rounded-full bg-ink-500">
         <motion.div
           className="relative h-full overflow-hidden rounded-full bg-accent"
-          animate={{ width: `${progress * 100}%` }}
+          animate={{ width: `${barPct * 100}%` }}
           transition={{ duration: 0.5, ease: "easeOut" }}
         >
           <span className="absolute inset-y-0 left-0 w-1/2 -skew-x-12 bg-gradient-to-r from-transparent via-white/40 to-transparent animate-shimmer" />
@@ -142,9 +162,9 @@ export default function ScanProgress({
         aria-label="Live scan activity"
         className="mt-5 h-36 overflow-auto rounded-xl border border-line bg-ink-900/80 p-3 font-mono text-[11.5px] leading-relaxed text-fg-muted"
       >
-        {log.map((l, i) => (
+        {shownLog.map((l, i) => (
           <motion.div
-            key={i}
+            key={`${i}-${l.slice(0, 12)}`}
             initial={{ opacity: 0, x: -6 }}
             animate={{ opacity: 1, x: 0 }}
             className={cn(l.startsWith("🚩") && "text-sev-high", l.startsWith("✅") && "text-ok")}
