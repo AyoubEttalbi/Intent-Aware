@@ -20,7 +20,7 @@ import {
   Footer,
 } from "./components/Landing";
 import { runScan, runDemo } from "./lib/api";
-import type { ScanRequest, ScanResult } from "./lib/types";
+import type { ScanRequest, ScanResult, JobProgress } from "./lib/types";
 
 type Phase = "idle" | "scanning" | "results";
 
@@ -41,17 +41,19 @@ export default function App() {
   const [elapsed, setElapsed] = useState(0);
   const [target, setTarget] = useState("");
   const [demo, setDemo] = useState(false);
+  const [progress, setProgress] = useState<JobProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
 
   const start = useCallback(async (req: ScanRequest | null) => {
     setError(null);
     setElapsed(0);
+    setProgress(null);
     setDemo(!req);
     setTarget(req?.base_url ?? "https://demo.yourapp.dev");
     setPhase("scanning");
     abort.current = new AbortController();
-    const handlers = { signal: abort.current.signal, onTick: setElapsed };
+    const handlers = { signal: abort.current.signal, onTick: setElapsed, onProgress: setProgress };
     try {
       const out = req ? await runScan(req, handlers) : await runDemo(handlers);
       setResult(out.result);
@@ -108,7 +110,7 @@ export default function App() {
               <div className="relative z-10 flex w-full max-w-2xl flex-col items-center">
                 <AnimatePresence mode="wait">
                   {phase === "scanning" ? (
-                    <ScanProgress key="prog" elapsedMs={elapsed} onCancel={cancel} target={target} demo={demo} />
+                    <ScanProgress key="prog" elapsedMs={elapsed} onCancel={cancel} target={target} demo={demo} progress={progress} />
                   ) : (
                     <motion.div
                       key="hero"

@@ -1,4 +1,4 @@
-import type { JobState, ScanRequest, ScanResult, Finding } from "./types";
+import type { JobState, JobProgress, ScanRequest, ScanResult, Finding } from "./types";
 import { SAMPLE_RESULT } from "./sampleReport";
 
 // API lives under the app base: "/api" in dev, "/intent-aware/api" when deployed
@@ -83,6 +83,7 @@ export async function pollStatus(jobId: string): Promise<JobState> {
 export interface RunHandlers {
   signal?: AbortSignal;
   onTick?: (elapsedMs: number) => void;
+  onProgress?: (p: JobProgress | null) => void;
 }
 
 /** A finished run + the job id that owns it (null for the bundled demo, which has no server job → no chat). */
@@ -111,6 +112,7 @@ export async function runScan(req: ScanRequest, h: RunHandlers = {}): Promise<Ru
       continue; // transient network blip — keep polling
     }
     fails = 0;
+    h.onProgress?.(state.progress ?? null);
     if (state.status === "completed" && state.results) return { result: enrichFindings(state.results), jobId };
     if (state.status === "failed") throw new Error(state.error || "Scan failed");
   }

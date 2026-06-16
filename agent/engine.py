@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -71,7 +72,8 @@ class SecurityEngine:
                  resume_context: Optional[dict] = None,
                  allow_writes: bool = False, extra_hosts: Optional[list] = None,
                  max_llm_calls: int = 60, output_dir: str = ".", log=print,
-                 llm_model: Optional[str] = None, llm_effort: Optional[str] = None):
+                 llm_model: Optional[str] = None, llm_effort: Optional[str] = None,
+                 max_seconds: Optional[int] = None):
         self.output_dir = output_dir or "."
         self.spec_url = spec_url or ""
         self.description = description or ""
@@ -107,10 +109,26 @@ class SecurityEngine:
         self._spec: dict = {}
         self._degraded: list = []   # human-readable notes on what could NOT be tested
         self._brain_ok = True       # LLM brain reachable? (probed at run start)
+        # Wall-clock budget: a scan ALWAYS terminates — past the deadline the
+        # attack matrix short-circuits and we still write a report with what we have.
+        self.max_seconds = int(max_seconds if max_seconds is not None
+                               else os.getenv("SCAN_MAX_SECONDS", "600"))
+        self._deadline = None
+        self._time_warned = False
         self.auth_scheme = None     # AuthScheme: how the target authenticates (set during run)
         self._plan_canon: dict = {}  # canonical-key index of the planner output
 
     def _send(self, req, identity=None):
+        # Wall-clock budget — past the deadline, stop spending so the matrix can't
+        # run forever on a slow remote target (e.g. time-based SQLi sleeps × roles).
+        if self._deadline and time.monotonic() > self._deadline:
+            if not self._time_warned:
+                self._time_warned = True
+                self._degraded.append(
+                    f"Scan time budget ({self.max_seconds}s) reached — testing stopped early; "
+                    "results cover only what was probed so far. Re-run with a narrower scope or a longer budget.")
+                self.log(f"⏱️ time budget {self.max_seconds}s reached — wrapping up with partial results.")
+            return Response(status=0, error="time budget reached")
         # Hard budget enforced at the point of spend (atomic reserve-before-send), so a
         # single fan-out plugin can't blow past max_requests on a third-party target.
         with self._req_lock:
@@ -198,6 +216,7 @@ class SecurityEngine:
                 return
 
     def run(self) -> dict:
+        self._deadline = time.monotonic() + self.max_seconds
         # 0. Brain liveness — surface (loudly) when the LLM is unreachable, so a
         #    deterministic-only run is never silently mistaken for a full one. This
         #    is the exact failure mode of a hardened systemd service whose user
@@ -297,6 +316,8 @@ class SecurityEngine:
         self._endpoints = endpoints
         plugins = all_plugins()
         actors = list(self.identities)
+        self.log(f"⚔️ Running attack matrix — {len(plugins)} detectors over {len(endpoints)} "
+                 f"endpoint(s) × {len(actors)} identit{'y' if len(actors) == 1 else 'ies'} ...")
         workers = max(1, min(8, len(endpoints)))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             per_endpoint = list(pool.map(

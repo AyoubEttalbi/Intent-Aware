@@ -129,9 +129,16 @@ export interface ScanRequest {
 
 export type JobStatus = "pending" | "running" | "completed" | "failed";
 
+export interface JobProgress {
+  phase: string;          // discover | crawl | identities | attack | verify | report
+  pct: number;            // 0..1 best-effort
+  lines: string[];        // real engine activity (last ~14 lines)
+}
+
 export interface JobState {
   job_id: string;
   status: JobStatus;
   results?: ScanResult | null;
   error?: string | null;
+  progress?: JobProgress | null;
 }
