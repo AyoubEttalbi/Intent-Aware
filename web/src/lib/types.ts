@@ -4,6 +4,17 @@ export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type Confidence = "high" | "medium" | "low";
 export type Grade = "A" | "B" | "C" | "D" | "F";
 
+// LLM brain controls surfaced in the UI.
+export type LlmModel = "claude-haiku-4-5" | "claude-sonnet-4-6" | "claude-opus-4-8";
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  pending?: boolean;
+  error?: boolean;
+}
+
 export interface ReqEvidence {
   method?: string;
   url?: string;
@@ -112,6 +123,8 @@ export interface ScanRequest {
   max_requests?: number;
   max_pages?: number;
   auth_identities?: AuthIdentity[];
+  model?: LlmModel;
+  effort?: Effort;
 }
 
 export type JobStatus = "pending" | "running" | "completed" | "failed";

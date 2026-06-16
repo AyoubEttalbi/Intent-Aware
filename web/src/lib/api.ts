@@ -61,6 +61,8 @@ export async function launchScan(req: ScanRequest): Promise<string> {
   };
   if (req.extra_hosts?.length) body.extra_hosts = req.extra_hosts;
   if (req.auth_identities?.length) body.auth_identities = req.auth_identities;
+  if (req.model) body.model = req.model;
+  if (req.effort) body.effort = req.effort;
 
   const r = await fetch(`${API_BASE}/analyze`, {
     method: "POST",
@@ -83,8 +85,14 @@ export interface RunHandlers {
   onTick?: (elapsedMs: number) => void;
 }
 
+/** A finished run + the job id that owns it (null for the bundled demo, which has no server job → no chat). */
+export interface RunResult {
+  result: ScanResult;
+  jobId: string | null;
+}
+
 /** Launch a scan and poll to completion (tolerant of transient blips, with a deadline). */
-export async function runScan(req: ScanRequest, h: RunHandlers = {}): Promise<ScanResult> {
+export async function runScan(req: ScanRequest, h: RunHandlers = {}): Promise<RunResult> {
   const jobId = await launchScan(req);
   const started = Date.now();
   const deadline = started + 12 * 60 * 1000; // 12-minute ceiling
@@ -103,13 +111,13 @@ export async function runScan(req: ScanRequest, h: RunHandlers = {}): Promise<Sc
       continue; // transient network blip — keep polling
     }
     fails = 0;
-    if (state.status === "completed" && state.results) return enrichFindings(state.results);
+    if (state.status === "completed" && state.results) return { result: enrichFindings(state.results), jobId };
     if (state.status === "failed") throw new Error(state.error || "Scan failed");
   }
 }
 
 /** Demo mode — resolve the bundled sample after a short, animated delay. */
-export async function runDemo(h: RunHandlers = {}): Promise<ScanResult> {
+export async function runDemo(h: RunHandlers = {}): Promise<RunResult> {
   const total = 5200;
   const started = Date.now();
   while (Date.now() - started < total) {
@@ -117,5 +125,37 @@ export async function runDemo(h: RunHandlers = {}): Promise<ScanResult> {
     await new Promise((res) => setTimeout(res, 220));
     h.onTick?.(Date.now() - started);
   }
-  return enrichFindings(structuredClone(SAMPLE_RESULT));
+  return { result: enrichFindings(structuredClone(SAMPLE_RESULT)), jobId: null };
+}
+
+// ── Per-test chat ───────────────────────────────────────────────────────────
+export interface ChatReply {
+  reply: string;
+  session_id: string;
+  idle_seconds: number;
+  fresh: boolean;
+}
+
+/** Ask a question in a finished scan's own context. */
+export async function sendChat(
+  jobId: string,
+  message: string,
+  opts: { model?: string; effort?: string } = {}
+): Promise<ChatReply> {
+  const r = await fetch(`${API_BASE}/chat/${jobId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, model: opts.model, effort: opts.effort }),
+  });
+  if (!r.ok) throw new Error(`Chat failed (${r.status}): ${(await r.text()).slice(0, 200)}`);
+  return (await r.json()) as ChatReply;
+}
+
+/** End a test's chat session server-side (frees the stored session). Best-effort. */
+export async function closeChat(jobId: string): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/chat/${jobId}/close`, { method: "POST" });
+  } catch {
+    /* ignore — the idle TTL will reap it anyway */
+  }
 }

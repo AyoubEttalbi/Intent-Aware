@@ -37,6 +37,7 @@ export default function App() {
   };
   const [phase, setPhase] = useState<Phase>("idle");
   const [result, setResult] = useState<ScanResult | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [target, setTarget] = useState("");
   const [demo, setDemo] = useState(false);
@@ -52,8 +53,9 @@ export default function App() {
     abort.current = new AbortController();
     const handlers = { signal: abort.current.signal, onTick: setElapsed };
     try {
-      const res = req ? await runScan(req, handlers) : await runDemo(handlers);
-      setResult(res);
+      const out = req ? await runScan(req, handlers) : await runDemo(handlers);
+      setResult(out.result);
+      setJobId(out.jobId);
       setPhase("results");
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (e) {
@@ -76,6 +78,7 @@ export default function App() {
   const reset = useCallback(() => {
     setPhase("idle");
     setResult(null);
+    setJobId(null);
     setError(null);
   }, []);
 
@@ -88,7 +91,7 @@ export default function App() {
       <AnimatePresence mode="wait">
         {phase === "results" && result ? (
           <motion.main key="results" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <ResultsView result={result} target={target} onNewScan={reset} />
+            <ResultsView result={result} target={target} jobId={jobId} onNewScan={reset} />
             <Footer />
           </motion.main>
         ) : (

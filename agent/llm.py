@@ -129,18 +129,22 @@ class ClaudeCodeProvider(LLMProvider):
     _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     def __init__(self, binary: Optional[str] = None, model: Optional[str] = None,
-                 timeout: Optional[int] = None):
+                 timeout: Optional[int] = None, effort: Optional[str] = None):
         self.binary = (binary or os.getenv("CLAUDE_CODE_BIN")
                        or shutil.which("claude") or "claude")
         # Cost-efficient default; set CLAUDE_CODE_MODEL='' to use the CLI's
         # own session default instead.
         self.model = model if model is not None else os.getenv("CLAUDE_CODE_MODEL", "claude-sonnet-4-6")
+        # Reasoning effort: low | medium | high | xhigh | max (None = CLI default).
+        self.effort = effort if effort is not None else (os.getenv("CLAUDE_CODE_EFFORT") or None)
         self.timeout = int(timeout if timeout is not None else os.getenv("CLAUDE_CODE_TIMEOUT", "900"))
 
     def generate(self, system_prompt: str, user_prompt: str, max_tokens: int = 4000) -> str:
         cmd = [self.binary, "-p", "--output-format", "json", "--strict-mcp-config"]
         if self.model:
             cmd += ["--model", self.model]
+        if self.effort:
+            cmd += ["--effort", self.effort]
         if system_prompt:
             cmd += ["--append-system-prompt", system_prompt]
         cmd += ["--disallowed-tools", *self._DISALLOWED_TOOLS]
@@ -227,9 +231,61 @@ def brain_status(timeout: int = 12):
     return True, provider
 
 
+def claude_chat(message: str, *, session_id: str, resume: bool = False,
+                system: Optional[str] = None, model: Optional[str] = None,
+                effort: Optional[str] = None, timeout: int = 180):
+    """Conversational claude_code turn bound to a persistent session id.
+
+    First turn  -> resume=False: creates `session_id` and seeds `system` (the
+                   test context), so the chat "knows" that scan.
+    Later turns -> resume=True: continues the SAME session; context accrues.
+
+    Each test (job) keeps its own session id, so chats never cross-contaminate.
+    Sandboxed like the brain: tools disabled, strict MCP, no external API key.
+    Returns (reply_text, session_id).
+    """
+    binary = os.getenv("CLAUDE_CODE_BIN") or shutil.which("claude") or "claude"
+    model = model or os.getenv("CLAUDE_CODE_MODEL") or "claude-sonnet-4-6"
+    cmd = [binary, "-p", "--output-format", "json", "--strict-mcp-config", "--model", model]
+    if effort:
+        cmd += ["--effort", effort]
+    cmd += ["--disallowed-tools", *ClaudeCodeProvider._DISALLOWED_TOOLS]
+    if resume:
+        cmd += ["--resume", session_id]
+    else:
+        cmd += ["--session-id", session_id]
+    # Re-seed the findings context on EVERY turn (not just the first) so a long
+    # chat can never drift away from the scan it's about.
+    if system:
+        cmd += ["--append-system-prompt", system]
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    # Run in a neutral dir (the data home) so the chat doesn't inherit the
+    # project's dev-oriented CLAUDE.md as context. Sessions persist per-cwd, so
+    # keeping it stable is what lets --resume find the conversation.
+    cwd = os.getenv("HOME") or ClaudeCodeProvider._PROJECT_ROOT
+    try:
+        proc = subprocess.run(cmd, input=message, capture_output=True, text=True,
+                              timeout=timeout, cwd=cwd, env=env)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"chat timed out after {timeout}s")
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        raise RuntimeError(f"chat: no output (exit {proc.returncode}): {(proc.stderr or '').strip()[:300]}")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw, session_id
+    if data.get("is_error"):
+        raise RuntimeError(f"chat error: {str(data.get('result'))[:300]}")
+    return str(data.get("result", "")), str(data.get("session_id") or session_id)
+
+
 class LLMClient:
-    def __init__(self):
+    def __init__(self, model: Optional[str] = None, effort: Optional[str] = None):
         self.provider_name = os.getenv("LLM_PROVIDER", "claude").lower()
+        self._model = model
+        self._effort = effort
         self.provider = self._setup_provider()
         self._cache: Dict[Any, str] = {}
         self._cache_lock = threading.Lock()
@@ -237,7 +293,7 @@ class LLMClient:
 
     def _setup_provider(self) -> LLMProvider:
         if self.provider_name in ("claude_code", "claude-code", "cli"):
-            return ClaudeCodeProvider()
+            return ClaudeCodeProvider(model=self._model, effort=self._effort)
 
         if self.provider_name == "claude":
             api_key = os.getenv("ANTHROPIC_API_KEY")

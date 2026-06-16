@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Play, Sparkles, ChevronDown, ShieldAlert, Plus, Trash2, KeyRound } from "lucide-react";
-import type { ScanRequest, AuthIdentity, AuthAdapterType } from "../lib/types";
+import { Play, Sparkles, ChevronDown, ShieldAlert, Plus, Trash2, KeyRound, Cpu, Gauge } from "lucide-react";
+import type { ScanRequest, AuthIdentity, AuthAdapterType, LlmModel, Effort } from "../lib/types";
 import { cn } from "../lib/ui";
 import { Toggle, Spinner } from "./ui/Primitives";
+import { Select, MODEL_OPTIONS, EFFORT_OPTIONS, type SelectOption } from "./ui/Select";
 
 const ADAPTER_TYPES: { value: AuthAdapterType; label: string }[] = [
   { value: "form", label: "Form login" },
@@ -31,6 +32,8 @@ export default function ScanForm({
   const [extraHosts, setExtraHosts] = useState("");
   const [maxRequests, setMaxRequests] = useState(400);
   const [identities, setIdentities] = useState<AuthIdentity[]>([]);
+  const [model, setModel] = useState<LlmModel>("claude-haiku-4-5");
+  const [effort, setEffort] = useState<Effort>("medium");
   const [err, setErr] = useState("");
 
   function submit(e: React.FormEvent) {
@@ -53,6 +56,8 @@ export default function ScanForm({
       extra_hosts: extraHosts.trim() ? extraHosts.split(",").map((h) => h.trim()).filter(Boolean) : undefined,
       max_requests: maxRequests,
       auth_identities: identities.length ? identities : undefined,
+      model,
+      effort,
     });
   }
 
@@ -227,6 +232,25 @@ export default function ScanForm({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* brain controls — model + reasoning effort for this scan */}
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        <span className="mr-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">Brain</span>
+        <Select<LlmModel>
+          value={model}
+          onChange={setModel}
+          label="Model"
+          icon={<Cpu size={14} />}
+          options={MODEL_OPTIONS as ReadonlyArray<SelectOption<LlmModel>>}
+        />
+        <Select<Effort>
+          value={effort}
+          onChange={setEffort}
+          label="Effort"
+          icon={<Gauge size={14} />}
+          options={EFFORT_OPTIONS as ReadonlyArray<SelectOption<Effort>>}
+        />
+      </div>
 
       {err && <p className="mt-4 text-sm text-sev-critical">{err}</p>}
 

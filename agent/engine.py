@@ -70,7 +70,8 @@ class SecurityEngine:
                  cross_browser: Optional[list] = None,
                  resume_context: Optional[dict] = None,
                  allow_writes: bool = False, extra_hosts: Optional[list] = None,
-                 max_llm_calls: int = 60, output_dir: str = ".", log=print):
+                 max_llm_calls: int = 60, output_dir: str = ".", log=print,
+                 llm_model: Optional[str] = None, llm_effort: Optional[str] = None):
         self.output_dir = output_dir or "."
         self.spec_url = spec_url or ""
         self.description = description or ""
@@ -99,8 +100,8 @@ class SecurityEngine:
                 spec_headers = c["headers"]
                 break
         self.parser = OpenAPIParser(allowed_hosts=hosts or None, headers=spec_headers)
-        self.planner = Planner()
-        self.explainer = Explainer()
+        self.planner = Planner(model=llm_model, effort=llm_effort)
+        self.explainer = Explainer(model=llm_model, effort=llm_effort)
         self._req_count = 0
         self._req_lock = threading.Lock()
         self._spec: dict = {}
