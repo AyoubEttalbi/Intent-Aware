@@ -321,7 +321,7 @@ function IdentityRow({
         )}
         {id.type === "form" && (
           <>
-            <input value={id.username || ""} onChange={(e) => onChange({ username: e.target.value })} placeholder="username" className="input px-2 py-1.5 text-xs" />
+            <input value={id.username || ""} onChange={(e) => onChange({ username: e.target.value })} placeholder="email or username" className="input px-2 py-1.5 text-xs" />
             <input value={id.password || ""} onChange={(e) => onChange({ password: e.target.value })} placeholder="password" type="password" className="input px-2 py-1.5 text-xs" />
             <input value={id.login_url || ""} onChange={(e) => onChange({ login_url: e.target.value })} placeholder="login URL (optional)" className="input px-2 py-1.5 text-xs sm:col-span-2" spellCheck={false} />
           </>
@@ -330,7 +330,7 @@ function IdentityRow({
           <>
             <input value={id.token_url || ""} onChange={(e) => onChange({ token_url: e.target.value })} placeholder="token URL (/api/login)" className="input px-2 py-1.5 text-xs" spellCheck={false} />
             <input value={id.token_path || ""} onChange={(e) => onChange({ token_path: e.target.value })} placeholder="token path (access_token)" className="input px-2 py-1.5 text-xs" spellCheck={false} />
-            <input value={id.username || ""} onChange={(e) => onChange({ username: e.target.value })} placeholder="username" className="input px-2 py-1.5 text-xs" />
+            <input value={id.username || ""} onChange={(e) => onChange({ username: e.target.value })} placeholder="email or username" className="input px-2 py-1.5 text-xs" />
             <input value={id.password || ""} onChange={(e) => onChange({ password: e.target.value })} placeholder="password" type="password" className="input px-2 py-1.5 text-xs" />
           </>
         )}

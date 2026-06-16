@@ -84,6 +84,16 @@ class SecurityEngine:
         self.max_pages = max_pages
         self.auth = auth
         self.auth_identities = auth_identities or []
+        # Feed the UI crawl a login: when no explicit single `auth` was given, use
+        # the first form identity so the crawler can authenticate and explore the
+        # surface BEHIND the login wall (otherwise it only ever sees the login page).
+        if not self.auth:
+            for cfg in self.auth_identities:
+                if isinstance(cfg, dict) and cfg.get("password") and cfg.get("type", "form") == "form":
+                    self.auth = {k: cfg.get(k) for k in (
+                        "login_url", "username", "password", "role", "success_url_contains",
+                        "username_selector", "password_selector", "submit_selector")}
+                    break
         self.cross_browser = cross_browser or []
         self.allow_writes = bool(allow_writes)
         self._artifacts = ""
