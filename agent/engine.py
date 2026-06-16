@@ -119,10 +119,11 @@ class SecurityEngine:
         self._spec: dict = {}
         self._degraded: list = []   # human-readable notes on what could NOT be tested
         self._brain_ok = True       # LLM brain reachable? (probed at run start)
-        # Wall-clock budget: a scan ALWAYS terminates — past the deadline the
-        # attack matrix short-circuits and we still write a report with what we have.
-        self.max_seconds = int(max_seconds if max_seconds is not None
-                               else os.getenv("SCAN_MAX_SECONDS", "600"))
+        # Overall time cap is OPT-IN only (scan everything by default). Per-operation
+        # timeouts (page.goto, LLM call, link checks) + max_requests already prevent
+        # true hangs, so there's no wall-clock coverage cap unless one is requested.
+        _ms = max_seconds if max_seconds is not None else os.getenv("SCAN_MAX_SECONDS")
+        self.max_seconds = int(_ms) if _ms else None
         self._deadline = None
         self._time_warned = False
         self.auth_scheme = None     # AuthScheme: how the target authenticates (set during run)
@@ -226,7 +227,7 @@ class SecurityEngine:
                 return
 
     def run(self) -> dict:
-        self._deadline = time.monotonic() + self.max_seconds
+        self._deadline = (time.monotonic() + self.max_seconds) if self.max_seconds else None
         # 0. Brain liveness — surface (loudly) when the LLM is unreachable, so a
         #    deterministic-only run is never silently mistaken for a full one. This
         #    is the exact failure mode of a hardened systemd service whose user
@@ -420,11 +421,20 @@ class SecurityEngine:
         """Run the QA crawler; merge its shadow spec into the attack surface."""
         from qa.crawler import run_qa_crawl, _NOISE_QS   # lazy: imports playwright only when used
         self.log("🧭 QA crawl: exploring the UI like a human tester ...")
+        # Give the crawl a SLICE of the wall-clock budget (the rest stays for the
+        # attack matrix + report) so the UI's "Discovering surface" phase can never
+        # run past the deadline — the crawl was previously time-unbounded.
+        crawl_deadline = None
+        if self._deadline:
+            now = time.monotonic()
+            crawl_deadline = now + max(30.0, (self._deadline - now) * 0.55)
         try:
             findings, shadow, artifacts = run_qa_crawl(
                 self.base_url, description=self.description, llm=None,
                 max_pages=self.max_pages, context=self.context, auth=self.auth,
-                artifacts_dir=os.path.join(self.output_dir, ".qa_artifacts"), log=self.log)
+                artifacts_dir=os.path.join(self.output_dir, ".qa_artifacts"),
+                log=self.log, deadline=crawl_deadline,
+                concurrency=int(os.getenv("CRAWL_CONCURRENCY", "4")))
         except Exception as e:
             self.log(f"⚠️ QA crawl failed ({e}); continuing with API tests only.")
             return []

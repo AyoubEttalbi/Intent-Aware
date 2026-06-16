@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 from urllib.parse import urlparse, urldefrag, parse_qs
 
 from playwright.async_api import async_playwright
@@ -106,9 +107,12 @@ class QACrawler:
                  max_pages: int = 25, max_cases_per_page: int = 12,
                  storage_state=None, artifacts_dir: str = ".qa_artifacts",
                  context: RunContext | None = None, auth: dict | None = None,
-                 responsive: bool = True, engine: str = "chromium", log=print):
+                 responsive: bool = True, engine: str = "chromium", log=print,
+                 deadline: float | None = None, concurrency: int = 4):
         self.base_url = (base_url or "").rstrip("/")
         self.description = description
+        self.deadline = deadline   # time.monotonic() ceiling — crawl stops past it (opt-in)
+        self.concurrency = max(1, concurrency)   # parallel page workers
         self.llm = llm or LLMClient()
         self.context = context or RunContext(target=self.base_url, description=description)
         self.auth = auth
@@ -136,142 +140,77 @@ class QACrawler:
             browser = await engine.launch(headless=True)
             ctx_args = {"storage_state": self.storage_state} if self.storage_state else {}
             context = await browser.new_context(**ctx_args)
-            page = await context.new_page()
-            rec = EventRecorder()
-            rec.attach(page)
-            page.on("request", self._on_request)
 
-            # Phased crawl: explore + TEST the public / login surface anonymously
-            # first, THEN log in, THEN crawl the authenticated surface — so the
-            # login form itself gets fuzzed before we're ever past it.
-            logged_in = not bool(self.auth)
-            anon_budget = max(2, self.max_pages // 3) if self.auth else self.max_pages
+            # --- Parallel crawl state (shared across worker pages) -------------
+            self._frontier = [_norm(self.base_url + "/")]
+            self._visited: set[str] = set()
+            self._n = 0
+            self._lock = asyncio.Lock()
+            # Bound concurrent claude subprocesses (~250 MB each) so the pool can't OOM.
+            self._llm_sema = asyncio.Semaphore(max(1, min(self.concurrency, 4)))
 
-            frontier = [self.base_url + "/"]
-            visited: set[str] = set()
-            n = 0
-            while n < self.max_pages:
-                # Cross into the authenticated phase once the public budget is spent
-                # (or the public frontier runs dry).
-                if not logged_in and (n >= anon_budget or not frontier):
-                    logged_in = True
-                    if await self._do_login(context):
-                        self.log("🔓 authenticated — now crawling behind the login.")
-                        seed = _norm(self.base_url + "/")
-                        visited.discard(seed)
-                        self._enqueued.discard(seed)
-                        if seed not in frontier:
-                            frontier.insert(0, seed)
-                    else:
-                        self.log("   login did not succeed — continuing as anonymous.")
-                if not frontier:
-                    break
-                url = _norm(frontier.pop(0))
-                if url in visited or not _same_host(url, self.host):
-                    continue
-                visited.add(url)
-                n += 1
-                tag = " (auth)" if (self.auth and logged_in) else ""
-                self.log(f"🔎 QA page {n}/{self.max_pages}{tag}: {url}")
-                cp = rec.checkpoint()
+            # One page + recorder per worker; ALL share the (authenticated) context,
+            # so cookies/session set by login apply to every worker.
+            n_workers = max(1, min(self.concurrency, self.max_pages))
+            pages, recs = [], []
+            for _ in range(n_workers):
+                pg = await context.new_page()
+                rc = EventRecorder()
+                rc.attach(pg)
+                pg.on("request", self._on_request)
+                pages.append(pg)
+                recs.append(rc)
+            self.log(f"🧭 QA crawl: {n_workers} parallel worker(s) exploring the UI ...")
+
+            # Seed the frontier from a fast link-harvest of the homepage (NO LLM) so
+            # every worker starts in parallel from t=0, instead of idling while page 1
+            # does its slow full LLM pass. The homepage is still fully processed below.
+            if n_workers > 1:
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                    # SPA hydration: wait for the network to settle and real content to
-                    # appear, else a React/Next shell is snapshotted empty (false 'clean').
+                    sp = pages[0]
+                    await sp.goto(_norm(self.base_url + "/"), wait_until="domcontentloaded", timeout=15000)
                     try:
-                        await page.wait_for_load_state("networkidle", timeout=6000)
+                        await sp.wait_for_load_state("networkidle", timeout=4000)
                     except Exception:
                         pass
-                    try:
-                        await page.wait_for_selector(
-                            "form,button,[role=button],input,main,h1,h2,[data-testid]", timeout=4000)
-                    except Exception:
-                        await page.wait_for_timeout(1000)
-                except Exception as e:
-                    self.log(f"   ⚠️ could not open: {e}")
-                    continue
-
-                shot = os.path.join(self.artifacts, f"page_{n}.png")
-                try:
-                    await page.screenshot(path=shot, full_page=True)
+                    seed_model = await extract_page_model(sp)
+                    from urllib.parse import urljoin as _urljoin
+                    for lk in seed_model.get("links", []):
+                        if not DESTRUCTIVE.search(lk.get("text", "")):
+                            self._maybe_enqueue(lk.get("href", ""))
+                    for hint in seed_model.get("nav_hints", []):
+                        if hint and not DESTRUCTIVE.search(hint):
+                            self._maybe_enqueue(_urljoin(self.base_url + "/", hint))
                 except Exception:
-                    shot = ""
+                    pass
 
-                for js in rec.since(cp)["js_exceptions"]:
-                    self._add(self._js_load_finding(url, js, shot))
+            # Phase 1 — crawl + fuzz the PUBLIC / login surface anonymously first.
+            anon_cap = max(2, self.max_pages // 3) if self.auth else self.max_pages
+            await self._crawl_phase(pages, recs, cap=anon_cap, authed=False)
 
-                model = await extract_page_model(page)
-                # SPA may still be hydrating — one retry if nothing interactive showed up.
-                if not (model.get("forms") or model.get("buttons")):
-                    try:
-                        await page.wait_for_timeout(1200)
-                        model = await extract_page_model(page)
-                    except Exception:
-                        pass
-                await self._check_links(context, url, model)
-
-                # Record real UI pages (for E2E flows + cross-browser); run responsive checks.
-                if (model.get("forms") or model.get("buttons")
-                        or model.get("links") or model.get("headings")):
-                    self.context.add_entity("pages", url)
-                    if self.responsive:
-                        from qa.responsive import check_responsive
-                        for f in await check_responsive(page, url, self.artifacts, n, self.log):
-                            self._add(f)
-
-                # Only QA-test pages that actually have interactive UI. JSON/API
-                # responses (no forms/buttons) are captured for shadow spec + links
-                # only — running test cases on them just invites hallucinated bugs.
-                if model.get("forms") or model.get("buttons"):
-                    plan = self.planner.plan(model, self.description, memory=self.context.brief())
-                    intent = plan.get("page_intent", "")
-                    if intent:
-                        self.context.remember_fact(f"{url} — {intent}")
-                    if model.get("forms"):
-                        self.sitemap.append({
-                            "url": url, "intent": intent,
-                            "forms": [{
-                                "submit_selector": fm.get("submit_selector") or "button[type=submit]",
-                                "fields": [{"ref": fld.get("ref"), "selector": fld.get("selector"),
-                                            "type": fld.get("type"), "placeholder": fld.get("placeholder")}
-                                           for fld in fm.get("fields", [])],
-                            } for fm in model["forms"]],
-                        })
-                    items = []
-                    for case in (plan.get("test_cases") or [])[:self.max_cases]:
-                        if self._destructive(case):
-                            continue
-                        obs = await execute_case(page, rec, model, case)
-                        for f in deterministic_findings(url, case, obs, shot):
-                            self._add(f)
-                        items.append({"case": case, "obs": obs, "screenshot": shot})
-                        if page.url != url:  # return home after a navigation/submit
-                            try:
-                                await page.goto(url, wait_until="domcontentloaded", timeout=10000)
-                            except Exception:
-                                pass
-                    for f in self.judge.judge(url, intent, items, self.description,
-                                              memory=self.context.brief()):
-                        self._add(f)
+            # Log in once on the shared context, then re-seed for the authed pass.
+            logged_in = not bool(self.auth)
+            if self.auth and not logged_in:
+                if await self._do_login(context):
+                    logged_in = True
+                    self.log("🔓 authenticated — now crawling behind the login.")
+                    seed = _norm(self.base_url + "/")
+                    self._visited.discard(seed)
+                    self._enqueued.discard(seed)
+                    self._frontier.insert(0, seed)
                 else:
-                    self.log("   (no interactive UI — links/shadow captured only)")
+                    self.log("   login did not succeed — continuing as anonymous.")
 
-                for ex in (plan.get("explore") or []):
-                    self._maybe_enqueue(frontier, ex.get("href", ""))
-                for lk in model.get("links", []):
-                    if not DESTRUCTIVE.search(lk.get("text", "")):
-                        self._maybe_enqueue(frontier, lk.get("href", ""))
-                # Button/JS-driven nav targets (often relative — resolve against this page).
-                from urllib.parse import urljoin
-                for hint in model.get("nav_hints", []):
-                    if hint and not DESTRUCTIVE.search(hint):
-                        self._maybe_enqueue(frontier, urljoin(url, hint))
+            # Phase 2 — crawl the authenticated surface (up to max_pages total).
+            await self._crawl_phase(pages, recs, cap=self.max_pages,
+                                    authed=bool(self.auth) and logged_in)
 
-            # Multi-step E2E journeys — reuse the (authenticated) context + discovered site map.
+            # Multi-step E2E journeys — reuse the (authenticated) context + site map.
             if self.sitemap:
                 from qa.flows import FlowPlanner, run_journey
-                journeys = FlowPlanner(self.llm).plan(self.description, self.sitemap, self.context.brief())
-                for j in journeys[:3]:
+                journeys = await asyncio.to_thread(
+                    FlowPlanner(self.llm).plan, self.description, self.sitemap, self.context.brief())
+                for j in (journeys or [])[:3]:
                     self.log(f"🧪 E2E journey: {j.get('name', 'journey')}")
                     finding = await run_journey(context, j, self.base_url, self.log)
                     if finding:
@@ -282,6 +221,152 @@ class QACrawler:
             await context.close()
             await browser.close()
         return self.findings, self.shadow, self.artifacts
+
+    async def _crawl_phase(self, pages, recs, cap: int, authed: bool):
+        """Run the worker pool until `cap` pages are done (or the frontier is truly
+        exhausted). A worker that finds the frontier momentarily empty must WAIT
+        while other workers are still processing — they may enqueue new links — and
+        only exit once the frontier is empty AND nothing is in flight."""
+        self._active = 0
+        async def worker(page, rec):
+            while True:
+                url = n = None
+                async with self._lock:
+                    if self._n >= cap or (self.deadline and time.monotonic() > self.deadline):
+                        return
+                    while self._frontier:
+                        cand = _norm(self._frontier.pop(0))
+                        if cand in self._visited or not _same_host(cand, self.host):
+                            continue
+                        url = cand
+                        break
+                    if url is None:
+                        # Nothing queued right now. If no worker is mid-page, no more
+                        # links are coming → done. Otherwise wait for one to enqueue.
+                        if self._active == 0:
+                            return
+                    else:
+                        self._visited.add(url)
+                        self._n += 1
+                        n = self._n
+                        self._active += 1
+                if url is None:
+                    await asyncio.sleep(0.15)
+                    continue
+                tag = " (auth)" if authed else ""
+                self.log(f"🔎 QA page {n}/{self.max_pages}{tag}: {url}")
+                try:
+                    await self._process_url(page, rec, url, n)
+                except Exception as e:
+                    self.log(f"   ⚠️ page error on {url}: {e}")
+                finally:
+                    async with self._lock:
+                        self._active -= 1
+        await asyncio.gather(*[worker(pg, rc) for pg, rc in zip(pages, recs)])
+
+    async def _process_url(self, page, rec, url: str, n: int):
+        """Process one page: open, snapshot, check links + responsive + the LLM
+        'understand this page' plan CONCURRENTLY, run test cases, enqueue links."""
+        cp = rec.checkpoint()
+        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+        # SPA hydration: settle the network + wait for real content to appear.
+        try:
+            await page.wait_for_load_state("networkidle", timeout=6000)
+        except Exception:
+            pass
+        try:
+            await page.wait_for_selector(
+                "form,button,[role=button],input,main,h1,h2,[data-testid]", timeout=4000)
+        except Exception:
+            await page.wait_for_timeout(1000)
+
+        shot = os.path.join(self.artifacts, f"page_{n}.png")
+        try:
+            await page.screenshot(path=shot, full_page=True)
+        except Exception:
+            shot = ""
+
+        for js in rec.since(cp)["js_exceptions"]:
+            self._add(self._js_load_finding(url, js, shot))
+
+        model = await extract_page_model(page)
+        if not (model.get("forms") or model.get("buttons")):
+            try:
+                await page.wait_for_timeout(1200)
+                model = await extract_page_model(page)
+            except Exception:
+                pass
+
+        interactive = bool(model.get("forms") or model.get("buttons"))
+        # Kick off the slow LLM "understand this page" call NOW, off the event loop,
+        # so it overlaps with the (also-slow) link-check + responsive screenshots.
+        plan_task = None
+        if interactive:
+            async def _plan():
+                async with self._llm_sema:
+                    return await asyncio.to_thread(
+                        self.planner.plan, model, self.description, self.context.brief())
+            plan_task = asyncio.create_task(_plan())
+
+        await self._check_links(page.context, url, model)
+
+        if (model.get("forms") or model.get("buttons")
+                or model.get("links") or model.get("headings")):
+            self.context.add_entity("pages", url)
+            if self.responsive:
+                from qa.responsive import check_responsive
+                for f in await check_responsive(page, url, self.artifacts, n, self.log):
+                    self._add(f)
+
+        plan = {}
+        if interactive:
+            try:
+                plan = await plan_task or {}
+            except Exception:
+                plan = {}
+            intent = plan.get("page_intent", "")
+            if intent:
+                self.context.remember_fact(f"{url} — {intent}")
+            if model.get("forms"):
+                self.sitemap.append({
+                    "url": url, "intent": intent,
+                    "forms": [{
+                        "submit_selector": fm.get("submit_selector") or "button[type=submit]",
+                        "fields": [{"ref": fld.get("ref"), "selector": fld.get("selector"),
+                                    "type": fld.get("type"), "placeholder": fld.get("placeholder")}
+                                   for fld in fm.get("fields", [])],
+                    } for fm in model["forms"]],
+                })
+            items = []
+            for case in (plan.get("test_cases") or [])[:self.max_cases]:
+                if self._destructive(case):
+                    continue
+                obs = await execute_case(page, rec, model, case)
+                for f in deterministic_findings(url, case, obs, shot):
+                    self._add(f)
+                items.append({"case": case, "obs": obs, "screenshot": shot})
+                if page.url != url:  # return home after a navigation/submit
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                    except Exception:
+                        pass
+            async with self._llm_sema:
+                judged = await asyncio.to_thread(
+                    self.judge.judge, url, intent, items, self.description, self.context.brief())
+            for f in (judged or []):
+                self._add(f)
+        else:
+            self.log("   (no interactive UI — links/shadow captured only)")
+
+        for ex in (plan.get("explore") or []):
+            self._maybe_enqueue(ex.get("href", ""))
+        for lk in model.get("links", []):
+            if not DESTRUCTIVE.search(lk.get("text", "")):
+                self._maybe_enqueue(lk.get("href", ""))
+        from urllib.parse import urljoin
+        for hint in model.get("nav_hints", []):
+            if hint and not DESTRUCTIVE.search(hint):
+                self._maybe_enqueue(urljoin(url, hint))
 
     async def _do_login(self, context) -> bool:
         """Log the crawl context in (mid-crawl, after the public pass). Captures
@@ -308,12 +393,13 @@ class QACrawler:
         return ok
 
     # --- helpers ---------------------------------------------------------
-    def _maybe_enqueue(self, frontier: list, href: str) -> None:
+    def _maybe_enqueue(self, href: str) -> None:
+        # Shared frontier — only mutated on the event loop (no await), so atomic.
         href = _norm(href)
-        if (href and href not in self._enqueued and _same_host(href, self.host)
-                and not INFRA.search(href)):
+        if (href and href not in self._enqueued and href not in self._visited
+                and _same_host(href, self.host) and not INFRA.search(href)):
             self._enqueued.add(href)
-            frontier.append(href)
+            self._frontier.append(href)
 
     def _destructive(self, case: dict) -> bool:
         return bool(DESTRUCTIVE.search(f"{case.get('title', '')} {case.get('target', '')}"))
@@ -382,9 +468,10 @@ class QACrawler:
                 meta["body_keys"].append(k)
 
     async def _check_links(self, context, page_url: str, model: dict) -> None:
-        checked = 0
+        import asyncio
+        targets = []
         for lk in model.get("links", []):
-            if checked >= 25:
+            if len(targets) >= 12:
                 break
             href = _norm(lk.get("href", ""))
             if not _same_host(href, self.host) or href in self._links_checked:
@@ -392,13 +479,20 @@ class QACrawler:
             if DESTRUCTIVE.search(lk.get("text", "")):
                 continue
             self._links_checked.add(href)
-            checked += 1
+            targets.append(href)
+
+        async def _one(href):
             try:
-                resp = await context.request.get(href, timeout=10000)
+                resp = await context.request.get(href, timeout=5000)
                 if resp.status >= 400:
                     self._add(broken_link_finding(page_url, href, resp.status))
             except Exception:
                 pass
+
+        # Check links in PARALLEL — sequential 1-at-a-time GETs (25 × up to 10s)
+        # were the single slowest part of each page.
+        if targets:
+            await asyncio.gather(*[_one(h) for h in targets])
 
     def _add(self, f: Finding) -> None:
         if f and f.dedup_key() not in self._finding_keys:
@@ -419,9 +513,11 @@ class QACrawler:
 
 def run_qa_crawl(base_url: str, description: str = "", llm: LLMClient | None = None,
                  max_pages: int = 25, storage_state=None, context: RunContext | None = None,
-                 auth: dict | None = None, artifacts_dir: str = ".qa_artifacts", log=print):
+                 auth: dict | None = None, artifacts_dir: str = ".qa_artifacts", log=print,
+                 deadline: float | None = None, concurrency: int = 4):
     """Sync wrapper — runs the async crawler to completion. Returns (findings, shadow, artifacts_dir)."""
     crawler = QACrawler(base_url, description=description, llm=llm, max_pages=max_pages,
                         storage_state=storage_state, context=context, auth=auth,
-                        artifacts_dir=artifacts_dir, log=log)
+                        artifacts_dir=artifacts_dir, log=log, deadline=deadline,
+                        concurrency=concurrency)
     return asyncio.run(crawler.run())
