@@ -145,10 +145,16 @@ class ClaudeCodeProvider(LLMProvider):
             cmd += ["--append-system-prompt", system_prompt]
         cmd += ["--disallowed-tools", *self._DISALLOWED_TOOLS]
 
+        # The CLI authenticates from the machine's logged-in session. A stray or
+        # placeholder ANTHROPIC_API_KEY in the environment (e.g. `your_key_here`
+        # from .env) makes it try that bogus *external* key instead → "Invalid API
+        # key". Strip it so claude_code always uses the OAuth session.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
         try:
             proc = subprocess.run(
                 cmd, input=user_prompt, capture_output=True, text=True,
-                timeout=self.timeout, cwd=self._PROJECT_ROOT,
+                timeout=self.timeout, cwd=self._PROJECT_ROOT, env=env,
             )
         except FileNotFoundError:
             raise RuntimeError(f"Claude Code CLI not found at '{self.binary}'. "
