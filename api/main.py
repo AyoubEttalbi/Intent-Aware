@@ -1,9 +1,12 @@
+import os
+import glob
+import shutil
 import uuid
 from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
-from agent.loop import AgentLoop
+from agent.engine import SecurityEngine
 from db.models import init_db, SessionLocal, Job, Bug
 
 init_db()
@@ -11,43 +14,85 @@ init_db()
 app = FastAPI(title="Intent-Aware QA Agent API")
 
 class AnalysisRequest(BaseModel):
-    spec_url: str
-    description: str
     base_url: str
-    max_assumptions: Optional[int] = 2
-    crawl_ui: Optional[bool] = False
+    spec_url: Optional[str] = ""                         # optional: auto-discovered / crawl-derived if absent
+    description: Optional[str] = ""                      # optional plain-English description
+    identities: Optional[List[Dict[str, Any]]] = None   # [{name, role, headers, owned_resource_ids}]
+    max_requests: Optional[int] = 400
+    crawl_ui: Optional[bool] = False                    # also run the smart QA crawler
+    max_pages: Optional[int] = 20                       # QA crawl page budget
+    auth: Optional[Dict[str, Any]] = None               # {type, username, password, login_url, ...} for gated crawl
+    auth_identities: Optional[List[Dict[str, Any]]] = None  # multi-role: [{name, role, auth adapter, owned_resource_ids}]
+    cross_browser: Optional[List[str]] = None           # e.g. ["firefox", "webkit"]
+    resume_context: Optional[Dict[str, Any]] = None     # prior run's "context" to resume from
+    resume_from_job_id: Optional[str] = None            # server-side resume: load a prior job's context
+    allow_writes: Optional[bool] = False                # permit mutating probes (staging/disposable only!)
+    extra_hosts: Optional[List[str]] = None             # additional in-scope hosts (split api.*/auth.* domains)
+    max_assumptions: Optional[int] = None               # legacy, ignored by the v2 engine
 
 class AnalysisResponse(BaseModel):
     job_id: str
     status: str
 
+def _prune_artifacts(root: str = "artifacts", keep: int = 25):
+    """Keep only the newest `keep` per-job artifact dirs so the data dir can't
+    grow unbounded across runs (screenshots/reports accumulate one dir per job)."""
+    try:
+        dirs = [d for d in glob.glob(os.path.join(root, "*")) if os.path.isdir(d)]
+        dirs.sort(key=os.path.getmtime, reverse=True)
+        for d in dirs[keep:]:
+            shutil.rmtree(d, ignore_errors=True)
+    except Exception:
+        pass  # best-effort hygiene — never fail a job over cleanup
+
+
 def run_analysis_task(job_id: str, request: AnalysisRequest):
     db = SessionLocal()
     try:
-        loop = AgentLoop(request.spec_url, request.description, request.base_url)
-        results = loop.run(max_assumptions=request.max_assumptions, crawl_ui=request.crawl_ui)
-        
+        # Server-side resume: load a prior job's run context if asked.
+        resume_context = request.resume_context
+        if request.resume_from_job_id and not resume_context:
+            prior = db.query(Job).filter(Job.id == request.resume_from_job_id).first()
+            if prior and isinstance(prior.results, dict):
+                resume_context = prior.results.get("context")
+
+        engine = SecurityEngine(
+            spec_url=request.spec_url or "",
+            description=request.description or "",
+            base_url=request.base_url,
+            identities=request.identities,
+            max_requests=request.max_requests or 400,
+            crawl_ui=bool(request.crawl_ui),
+            max_pages=request.max_pages or 20,
+            auth=request.auth,
+            auth_identities=request.auth_identities,
+            cross_browser=request.cross_browser,
+            resume_context=resume_context,
+            allow_writes=bool(request.allow_writes),
+            extra_hosts=request.extra_hosts,
+            output_dir=f"artifacts/{job_id}",   # per-job artifacts: no cross-job clobber
+        )
+        res = engine.run()
+
         job = db.query(Job).filter(Job.id == job_id).first()
         if job:
             job.status = "completed"
-            job.results = results
+            job.results = res                       # findings + coverage + grade + report_markdown
             job.completed_at = datetime.utcnow()
-            
-            # Save individual bugs for easy querying
-            for r in results:
-                if r['check'].get('is_bug'):
-                    bug = Bug(
-                        job_id=job_id,
-                        severity=r['check'].get('severity'),
-                        reason=r['check'].get('reason'),
-                        scenario_name=r['scenario'].get('name'),
-                        endpoint=r['scenario'].get('endpoint'),
-                        method=r['scenario'].get('method'),
-                        reproduction_json=r['scenario'],
-                        response_data=r['response']
-                    )
-                    db.add(bug)
-            
+
+            for f in res.get("findings", []):
+                ev = f.get("evidence") or {}
+                key = f.get("endpoint_key", "")
+                db.add(Bug(
+                    job_id=job_id,
+                    severity=f.get("severity"),
+                    reason=f.get("title"),
+                    scenario_name=f.get("vuln_class"),
+                    endpoint=key,
+                    method=(key.split(" ")[0] if key else None),
+                    reproduction_json=(ev.get("request") or {}),
+                    response_data=(ev.get("response") or {}),
+                ))
             db.commit()
     except Exception as e:
         job = db.query(Job).filter(Job.id == job_id).first()
@@ -57,6 +102,7 @@ def run_analysis_task(job_id: str, request: AnalysisRequest):
             db.commit()
     finally:
         db.close()
+        _prune_artifacts()   # bound the data dir after every job
 
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze(request: AnalysisRequest, background_tasks: BackgroundTasks):
