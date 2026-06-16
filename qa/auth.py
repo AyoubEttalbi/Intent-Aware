@@ -56,16 +56,27 @@ def _pick_identifier_field(fields: list) -> dict | None:
     return nonpw[0]
 
 
-async def _verify(page, auth: dict, login_url: str) -> tuple[bool, str]:
+async def _verify(page, context, auth: dict, login_url: str) -> tuple[bool, str]:
+    """Confirm login by REAL signals — never by 'the password field disappeared'
+    (a show-password toggle clears that and false-positives). We accept: an
+    explicit success URL, navigation off the login page, or a session cookie."""
+    import re as _re
     sig = auth.get("success_url_contains")
     if sig and sig in page.url:
         return True, f"reached {page.url}"
-    still_login = await page.query_selector("input[type=password]")
-    if not still_login:
-        return True, f"login form cleared (now at {page.url})"
-    if page.url.rstrip("/") != login_url.rstrip("/"):
+    cur = page.url.rstrip("/").lower()
+    lu = login_url.rstrip("/").lower()
+    if cur != lu and not _re.search(r"/login|/signin|/sign-in|/auth|/connexion", cur):
         return True, f"navigated to {page.url}"
-    return False, "still on the login form after submitting (wrong credentials?)"
+    try:
+        for c in await context.cookies():
+            name = c.get("name") or ""
+            if c.get("value") and _re.search(r"sess|sid|auth|token|jwt|connect", name, _re.I):
+                return True, f"session cookie '{name}' set"
+    except Exception:
+        pass
+    return False, (f"still on the login page ({page.url}) — check the email/password, the login URL, "
+                   "or that the form's submit button was found (not a 'show password' toggle)")
 
 
 async def login(context, auth: dict, base_url: str, log=print):
@@ -111,13 +122,27 @@ async def login(context, auth: dict, base_url: str, log=print):
 
         await page.fill(user_sel, str(auth.get("username", "")))
         await page.fill(pwd_sel, str(auth.get("password", "")))
+        clicked = False
         if submit_sel:
-            await page.click(submit_sel, timeout=5000)
-        else:
+            try:
+                await page.click(submit_sel, timeout=5000)
+                clicked = True
+            except Exception:
+                pass
+        if not clicked:
+            # most login forms also submit on Enter from the password field
+            try:
+                await page.focus(pwd_sel)
+            except Exception:
+                pass
             await page.keyboard.press("Enter")
-        await page.wait_for_timeout(1500)
+        # let the login request + any redirect settle (SPA logins resolve async)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=4000)
+        except Exception:
+            await page.wait_for_timeout(1500)
 
-        ok, msg = await _verify(page, auth, login_url)
+        ok, msg = await _verify(page, context, auth, login_url)
         state = await context.storage_state() if ok else None
         return ok, state, msg
     except Exception as e:
