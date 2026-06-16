@@ -112,7 +112,7 @@ function Graph({ nodes, onSelect }: { nodes: Node[]; onSelect?: (k: string) => v
       {/* core */}
       <mesh>
         <icosahedronGeometry args={[0.5, 0]} />
-        <meshStandardMaterial color="#6E79E5" emissive="#6E79E5" emissiveIntensity={0.6} wireframe />
+        <meshStandardMaterial color="#a1a1aa" emissive="#a1a1aa" emissiveIntensity={0.5} wireframe />
       </mesh>
       {nodes.map((n) => (
         <NodeMesh key={n.key} node={n} onSelect={onSelect} />

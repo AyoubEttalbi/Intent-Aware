@@ -31,7 +31,7 @@ export default function Header({ onNewScan, scanned }: { onNewScan: () => void; 
         <button onClick={onNewScan} className="group flex items-center gap-2.5" aria-label="Home">
           <motion.span
             whileHover={{ rotate: -6, scale: 1.04 }}
-            className="grid h-8 w-8 place-items-center rounded-lg bg-accent shadow-[0_6px_18px_-6px_rgb(var(--accent)/0.8)]"
+            className="grid h-8 w-8 place-items-center rounded-lg bg-accent"
           >
             <ShieldCheck size={17} className="text-accent-fg" />
           </motion.span>

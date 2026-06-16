@@ -82,7 +82,7 @@ export default function ScanForm({
           spellCheck={false}
         />
         <p className="mt-1.5 text-xs text-fg-subtle">
-          That's all it needs — the spec, description and login below are optional.
+          That's all it needs. The spec, description and login below are optional.
         </p>
       </div>
 
@@ -123,7 +123,7 @@ export default function ScanForm({
         className="mt-5 flex items-center gap-1.5 text-xs font-semibold text-fg-muted hover:text-fg"
       >
         <ChevronDown size={14} className={cn("transition-transform", advanced && "rotate-180")} />
-        Advanced — auth, scope & safety
+        Advanced · auth, scope & safety
       </button>
 
       <AnimatePresence initial={false}>

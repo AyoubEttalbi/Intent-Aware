@@ -6,63 +6,67 @@
    Linear design system — tokens. Light = :root, Dark = .dark.
    Every value is an "R G B" triplet so Tailwind can apply alpha.
    Dark canvas is #010102 (Linear's faint-blue near-black, never pure #000).
-   The single chromatic accent is lavender-blue (#5e6ad2 family).
+   Monochrome system: zinc base + inverted neutral CTA. The only colour on the
+   page is severity/grade (semantic), never brand chrome.
    =================================================================== */
 @layer base {
   :root {
-    /* light — a clean, mirrored complement to the dark canvas */
+    /* light — clean white / zinc, mirrors the near-black canvas */
     --bg: 255 255 255;
-    --surface: 250 250 251;
-    --surface-2: 243 244 246;
-    --surface-3: 233 235 239;
+    --surface: 250 250 250;   /* zinc-50 */
+    --surface-2: 244 244 245; /* zinc-100 */
+    --surface-3: 228 228 231; /* zinc-200 */
 
-    --fg: 8 9 12;
-    --fg-muted: 60 65 73;
-    --fg-subtle: 107 114 128;
+    --fg: 9 9 11;             /* zinc-950 */
+    --fg-muted: 82 82 91;     /* zinc-600 */
+    --fg-subtle: 113 113 122; /* zinc-500 */
 
-    --border: 17 20 28;       /* dark, applied at low alpha → hairlines on white */
-    --shadow: 17 24 39;
+    --border: 9 9 11;         /* dark, applied at low alpha → hairlines on white */
+    --shadow: 9 9 11;
 
-    --accent: 79 91 196;        /* #4F5BC4 — deeper lavender for legible contrast on white */
-    --accent-strong: 67 78 178;
+    /* MONOCHROME accent — the "accent" is the inverted neutral: a black CTA on
+       white. No purple, no glow. The only chroma on the page is severity. */
+    --accent: 9 9 11;
+    --accent-strong: 39 39 42;  /* zinc-800 hover */
     --accent-fg: 255 255 255;
 
-    --ink-900: 250 250 251;
-    --ok: 22 140 56;
+    --ink-900: 250 250 250;
+    --ok: 21 128 61;
 
     --sev-critical: 220 38 38;
     --sev-high: 217 119 6;
     --sev-medium: 161 98 7;
-    --sev-low: 79 91 196;
+    --sev-low: 37 99 235;
     --sev-info: 100 116 139;
 
     color-scheme: light;
   }
 
   .dark {
-    --bg: 1 1 2;             /* #010102 — Linear near-black, NOT pure #000 */
-    --surface: 15 16 17;     /* #0f1011 surface-1 */
-    --surface-2: 20 21 22;   /* #141516 surface-2 */
-    --surface-3: 26 28 33;   /* #1a1c21 nested / surface-3 */
+    --bg: 10 10 11;          /* #0a0a0b — near-black zinc, NOT pure #000 */
+    --surface: 18 18 20;     /* zinc-900-ish */
+    --surface-2: 24 24 27;   /* zinc-900 */
+    --surface-3: 32 32 36;   /* zinc-800-ish nested */
 
-    --fg: 247 248 248;       /* #f7f8f8 */
-    --fg-muted: 196 202 213;
-    --fg-subtle: 138 143 152;/* #8a8f98 */
+    --fg: 250 250 250;       /* zinc-50 */
+    --fg-muted: 161 161 170; /* zinc-400 */
+    --fg-subtle: 113 113 122;/* zinc-500 */
 
     --border: 255 255 255;  /* applied at low alpha on near-black → hairline */
     --shadow: 0 0 0;
 
-    --accent: 110 121 229;      /* #6E79E5 — lavender, a touch brighter to pop on near-black */
-    --accent-strong: 139 150 255;/* #8B96FF — Linear hover lavender */
-    --accent-fg: 255 255 255;
+    /* MONOCHROME accent — near-white inverted CTA (white button, black text). */
+    --accent: 250 250 250;
+    --accent-strong: 228 228 231;/* zinc-200 hover */
+    --accent-fg: 10 10 11;
 
-    --ink-900: 1 1 2;
+    --ink-900: 10 10 11;
     --ok: 52 199 89;
 
-    --sev-critical: 251 113 113;
+    --sev-critical: 248 113 113;
     --sev-high: 251 146 60;
     --sev-medium: 250 204 21;
-    --sev-low: 139 150 255;
+    --sev-low: 96 165 250;
     --sev-info: 148 163 184;
 
     color-scheme: dark;
@@ -80,11 +84,11 @@
     @apply bg-bg text-fg font-sans antialiased;
     font-feature-settings: "cv01", "cv02", "cv03", "cv04", "ss01", "ss03";
     letter-spacing: -0.011em;
-    /* identity = one barely-there lavender wash high on the canvas; the dark IS
-       the whitespace. No rainbow blobs, no atmospheric gradients. */
+    /* identity = one barely-there neutral spotlight high on the canvas; the dark
+       IS the whitespace. No accent wash, no rainbow blobs, no gradients. */
     background-image: radial-gradient(
       62rem 34rem at 50% -16rem,
-      rgb(var(--accent) / 0.10),
+      rgb(var(--fg) / 0.05),
       transparent 72%
     );
     background-attachment: fixed;
@@ -148,10 +152,10 @@
            transition-[transform,background-color,box-shadow,border-color,color] duration-150
            active:scale-[0.985] disabled:opacity-40 disabled:pointer-events-none select-none;
   }
-  /* Linear primary — solid lavender, 8px corners, compact. Never pill. */
+  /* Monochrome primary — inverted neutral (white CTA on dark, black on light),
+     8px corners, compact. No glow. Tactile press via .btn active scale. */
   .btn-primary {
-    @apply btn bg-accent text-accent-fg hover:bg-accent-strong
-           shadow-[0_1px_0_0_rgb(var(--accent-fg)/0.18)_inset,0_10px_30px_-12px_rgb(var(--accent)/0.7)];
+    @apply btn bg-accent text-accent-fg hover:bg-accent-strong;
   }
   .btn-ghost {
     @apply btn border border-line bg-transparent text-fg-muted
