@@ -1,12 +1,15 @@
 import os
 import glob
 import shutil
+import time
 import uuid
+import threading
 from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 from agent.engine import SecurityEngine
+from agent.llm import claude_chat
 from db.models import init_db, SessionLocal, Job, Bug
 
 init_db()
@@ -28,6 +31,8 @@ class AnalysisRequest(BaseModel):
     resume_from_job_id: Optional[str] = None            # server-side resume: load a prior job's context
     allow_writes: Optional[bool] = False                # permit mutating probes (staging/disposable only!)
     extra_hosts: Optional[List[str]] = None             # additional in-scope hosts (split api.*/auth.* domains)
+    model: Optional[str] = None                         # LLM brain model (e.g. claude-haiku-4-5 / -sonnet-4-6)
+    effort: Optional[str] = None                        # reasoning effort: low|medium|high|xhigh|max
     max_assumptions: Optional[int] = None               # legacy, ignored by the v2 engine
 
 class AnalysisResponse(BaseModel):
@@ -70,6 +75,8 @@ def run_analysis_task(job_id: str, request: AnalysisRequest):
             resume_context=resume_context,
             allow_writes=bool(request.allow_writes),
             extra_hosts=request.extra_hosts,
+            llm_model=request.model,
+            llm_effort=request.effort,
             output_dir=f"artifacts/{job_id}",   # per-job artifacts: no cross-job clobber
         )
         res = engine.run()
@@ -141,6 +148,96 @@ async def get_status(job_id: str):
         "results": job.results,
         "error": job.error
     }
+
+# ── Per-test chat sessions ────────────────────────────────────────────────
+# Each completed scan owns a claude session seeded with THAT scan's findings, so
+# follow-ups ("how do I fix the IDOR?") stay in the test's context and never
+# cross-contaminate other tests. A turn is an ephemeral `claude -p --resume`
+# subprocess — nothing lingers between messages — and an idle TTL drops the
+# stored session so state can't pile up on the VPS.
+CHAT_IDLE_SECONDS = int(os.getenv("CHAT_IDLE_SECONDS", "600"))   # 10 min of silence -> closed
+_CHAT: Dict[str, Dict[str, Any]] = {}
+_CHAT_LOCK = threading.Lock()
+
+
+def _chat_sweep():
+    now = time.time()
+    with _CHAT_LOCK:
+        for jid in [k for k, v in _CHAT.items() if now - v["last"] > CHAT_IDLE_SECONDS]:
+            _CHAT.pop(jid, None)
+
+
+def _chat_context(job) -> str:
+    res = job.results if isinstance(job.results, dict) else {}
+    cov = res.get("coverage", {}) or {}
+    finds = res.get("findings", []) or []
+    lines = [
+        "You are a security advisor embedded in the Intent-Aware report for ONE scan.",
+        "Answer the founder's questions about THIS scan only: explain issues in plain language, "
+        "help prioritise, and suggest concrete fixes. Be concrete, calm, and jargon-free. You have "
+        "no tools — reason only from the findings below, and never invent issues that aren't listed.",
+        "",
+        f"Target: {res.get('target') or job.base_url}",
+        f"Grade: {res.get('grade')} ({res.get('score')}/100)   Findings: {len(finds)}",
+    ]
+    if cov.get("degraded"):
+        lines.append("Scan caveats: " + "; ".join(list(cov.get("degraded", []))[:4]))
+    lines.append("\nFindings:")
+    for i, f in enumerate(finds[:25]):
+        lines.append(
+            f"{i+1}. [{f.get('severity')}] {f.get('title')} — {f.get('endpoint_key')}\n"
+            f"   why it matters: {(f.get('impact') or f.get('explanation') or f.get('detail') or '')[:240]}\n"
+            f"   suggested fix:  {(f.get('fix') or '(none given)')[:240]}")
+    if not finds:
+        lines.append("(no findings — the scan surfaced nothing exploitable)")
+    return "\n".join(lines)
+
+
+class ChatRequest(BaseModel):
+    message: str
+    model: Optional[str] = None
+    effort: Optional[str] = None
+
+
+@app.post("/chat/{job_id}")
+def chat(job_id: str, body: ChatRequest):
+    """Ask a question in the context of a finished scan. Sync def -> FastAPI runs
+    it in a worker thread, so the blocking claude subprocess never stalls the loop."""
+    msg = (body.message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="empty message")
+    _chat_sweep()
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="scan not found")
+        if job.status != "completed":
+            raise HTTPException(status_code=409, detail="scan is not finished yet")
+        with _CHAT_LOCK:
+            sess = _CHAT.get(job_id)
+        first = sess is None
+        sid = str(uuid.uuid4()) if first else sess["session_id"]
+        system = _chat_context(job)   # re-seed every turn so context never drifts
+        try:
+            reply, sid = claude_chat(msg, session_id=sid, resume=not first, system=system,
+                                     model=body.model, effort=body.effort)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"chat brain error: {e}")
+        with _CHAT_LOCK:
+            _CHAT[job_id] = {"session_id": sid, "last": time.time(),
+                             "model": body.model, "effort": body.effort}
+        return {"reply": reply, "session_id": sid, "idle_seconds": CHAT_IDLE_SECONDS, "fresh": first}
+    finally:
+        db.close()
+
+
+@app.post("/chat/{job_id}/close")
+def chat_close(job_id: str):
+    with _CHAT_LOCK:
+        existed = _CHAT.pop(job_id, None) is not None
+    return {"closed": existed}
+
 
 @app.get("/")
 async def root():

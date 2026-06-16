@@ -10,6 +10,7 @@ import FindingsList, { type FindingsListHandle } from "./FindingsList";
 
 const AttackSurface3D = lazy(() => import("./AttackSurface3D"));
 import ReportView from "./ReportView";
+import TestChat from "./TestChat";
 import { Stat } from "./ui/Primitives";
 
 const fade = {
@@ -20,10 +21,12 @@ const fade = {
 export default function ResultsView({
   result,
   target,
+  jobId,
   onNewScan,
 }: {
   result: ScanResult;
   target: string;
+  jobId: string | null;
   onNewScan: () => void;
 }) {
   const listRef = useRef<FindingsListHandle>(null);
@@ -101,6 +104,17 @@ export default function ResultsView({
       {/* report */}
       <motion.div {...fade} transition={{ duration: 0.5, delay: 0.2 }} className="mt-6">
         <ReportView markdown={result.report_markdown} />
+      </motion.div>
+
+      {/* chat with this test's own session */}
+      <motion.div {...fade} transition={{ duration: 0.5, delay: 0.24 }} className="mt-6">
+        {jobId ? (
+          <TestChat jobId={jobId} />
+        ) : (
+          <div className="surface p-6 text-center text-sm text-fg-muted">
+            Chatting with the results is available after a real scan — the demo has no live session.
+          </div>
+        )}
       </motion.div>
     </div>
   );
