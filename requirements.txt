@@ -1,10 +1,15 @@
 fastapi
 uvicorn
+httpx
 playwright
 anthropic
 psycopg2-binary
 networkx
 openapi-spec-validator
+pyyaml
 python-dotenv
 sqlalchemy
 requests
+openai
+python-multipart
+pytest
