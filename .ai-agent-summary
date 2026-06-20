@@ -1,30 +1,37 @@
-# AI Agent Project Summary — Intent-Aware Autonomous QA Agent
+# AI Agent Project Summary — Intent-Aware (Autonomous QA + Security Tester)
 
 ## Project Overview
-An autonomous, intent-aware QA agent that bridges the gap between UI exploration and API security auditing. It uses a "Shadow Spec" (discovered via UI crawling) to supplement official OpenAPI specs and applies a multi-layered detection strategy to identify functional and security bugs.
+Point it at a live app (just a URL — spec/description/credentials optional) and it explores like a QA
+engineer, attacks like a pentester, and returns a founder-grade report. The LLM (local Claude Code CLI)
+is the **brain**; deterministic plugins with **effect oracles** are the **hands**. Read-only and
+host-scoped by default, so it's safe against third-party targets.
 
-## 🚀 Latest Milestones (COMPLETED)
-- **Phase 7: Web UI Discovery**: Playwright crawler with backtracking and visual status overlay.
-- **Phase 8: Intelligent Form Fuzzing**: Contextual form analysis using LLM to generate realistic/adversarial input values right before button interactions.
-- **Hardening & Rules Alignment**: Integrated a comprehensive `rules.md` governance layer. The agent now prioritizes high-impact security bugs and uses a high-precision LLM Judge to eliminate false positives (e.g., distinguishing security blocks from crashes).
-- **Shadow Spec Integration**: Discovered endpoints are now merged into the analysis pipeline to test "hidden" or undocumented API paths.
+## Live architecture (v2.1 — what actually runs)
+- **Orchestrator:** `agent/engine.py` — discover → plan (LLM) → attack matrix → explain (LLM) → report.
+- **Brain:** `agent/llm.py` (Claude Code CLI, no API key) + `agent/planner.py`; untrusted app text is
+  fenced by `agent/prompt_safety.py` (prompt-injection defence); temperature 0; request + LLM-call budgets.
+- **Discovery:** `core/surface.py` (OpenAPI v2/v3, basePath, servers) + `extractors/parser.py`
+  (auto-probe, JSON/YAML, scope-safe) + GraphQL detection + UI shadow spec (first-class endpoints).
+- **Identities:** `core/auth_adapters.py` — `form`/`bearer`/`api_key`/`header`/`session`/`token_exchange`
+  (non-form resolve without a browser); `core/discovery.py` harvests owned + foreign ids.
+- **Attacks:** `attacks/` — 16 plugins, each an effect oracle (broken_auth, idor, mass_assignment, sqli,
+  xss, stored_xss, path_traversal, authz_matrix, jwt_attacks, graphql, web_extra = cors/security_headers/
+  open_redirect/ssti/command_injection/secrets_exposure).
+- **QA crawler:** `qa/` — auth-aware, SPA-hardened (networkidle, robust selectors, button/JS nav).
+- **Report:** `reports/founder_report.py` — A–F grade (confidence-weighted, coverage-gated), plain-language
+  explain (`detection/explainer.py`), repro curl (incl. baseline for differentials), per-job artifacts.
+- **API:** `api/main.py` (`/analyze`, `/status/{id}`, resume by job id).
 
-## 🛠️ Technical Architecture
-- **Agent Loop**: `agent/loop.py` (Handles Shadow Spec merging and intent-based orchestration).
-- **Intelligent Crawler**: `execution/crawler.py` (Contextual form filling, network sniffing, and unique UI bug deduplication).
-- **LLM Judge**: `detection/layer3_llm_judge.py` (Rules-aware semantic validation).
-- **Governance**: `rules.md` (Defines the decision-making logic for the agent).
+## Legacy v1 (kept only for reference — do NOT build on)
+`agent/loop.py`, `agent/state_graph.py`, `detection/layer1|2|3*.py`, `execution/crawler.py`,
+`execution/runner.py`, `extractors/intent.py`, `extractors/assumptions.py`, `reports/generator.py`.
 
-## 📂 Project Structure
-- `api/`: Job orchestration API.
-- `agent/`: Orchestration and LLM client.
-- `extractors/`: Intent and Assumption extraction (Rules-aligned).
-- `generators/`: Atomic adversarial scenario generation.
-- `execution/`: UI Crawler and HTTP Runner.
-- `detection/`: Multi-layer bug detection (Contract, Comparison, LLM-Judge).
-- `reports/`: Differentiated reporting (Confirmed Bugs vs. Potential Issues).
+## How to run / verify
+- Regression gate (no LLM, no browser): `./.venv/bin/python -m pytest tests/test_v2_engine.py`
+  → 13 tests, 16 detectors catch their planted bug in `target_app`, **zero false positives**.
+- Full demo: `./.venv/bin/python run_demo.py` → see `latest_report.md`.
+- Safety: write-based probes need `allow_writes=True` (disposable/staging only); DELETE never injected.
 
-## 📝 Resumption Notes
-- **Vibe Check**: The agent now acts like a Senior Security Auditor—focused, precise, and less "noisy."
-- **Execution**: Run `python run_demo.py`. Check `latest_report.md` for prioritized findings and `crawler_log.txt` for the "thought process" behind form filling.
-- **Next Steps**: Implement multi-user persona testing (simulating Admin vs. User vs. Attacker) for cross-user data leakage detection.
+## Next steps
+CSRF plugin · browser-confirmed DOM/stored XSS for SPAs · deeper GraphQL field-level authz · a true
+adaptive agenda loop (bug → escalate) · CVSS scoring · a web UI to launch scans without curl.

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from playwright.async_api import async_playwright
 from typing import Set, Dict, List, Any
 from urllib.parse import urljoin, urlparse
@@ -24,7 +25,10 @@ class WebCrawler:
         """
         async with async_playwright() as p:
             self._log_action("🚀 Playwright started. Launching browser...")
-            browser = await p.chromium.launch(headless=False, slow_mo=500)
+            # Default to headless so it runs on servers without a display;
+            # set CRAWLER_HEADLESS=false locally to watch the browser.
+            headless = os.getenv("CRAWLER_HEADLESS", "true").lower() != "false"
+            browser = await p.chromium.launch(headless=headless, slow_mo=500)
             context = await browser.new_context()
             page = await context.new_page()
             self._log_action("✅ Browser & Page ready.")

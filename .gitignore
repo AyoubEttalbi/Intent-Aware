@@ -10,9 +10,24 @@ env.bak/
 venv.bak/
 
 # Project specific
+.browsers/
+.qa_artifacts/
 qa_agent.db
 crawler_log.txt
 latest_report.md
 test_results.json
 .vscode/
 .idea/
+
+# OMC orchestration state — never commit
+.omc/
+# node deps + build output
+node_modules/
+web/dist/
+# per-job scan artifacts
+artifacts/
+# scratch repros + backups
+tmp_*
+*.bak-*
+# the private local-setup file (holds tokens/creds) must never be committed
+intent-aware-LOCAL-SETUP.md
