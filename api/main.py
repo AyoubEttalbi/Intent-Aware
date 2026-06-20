@@ -100,7 +100,10 @@ def _job_logger(job_id: str):
             if p is None:
                 return
             p["lines"].append(s)
-            del p["lines"][:-14]   # keep the last 14 lines
+            # Keep the FULL scan history so the UI log never loses earlier activity
+            # mid-test (only trim at a high safety cap to bound memory on huge crawls).
+            if len(p["lines"]) > 2000:
+                del p["lines"][:-2000]
             p["phase"], p["pct"] = _derive_phase(s, p["phase"], p["pct"])
             p["updated"] = time.time()
     return _log
