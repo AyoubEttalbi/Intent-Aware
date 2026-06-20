@@ -83,7 +83,9 @@ export default function ScanProgress({
 
   const seconds = useMemo(() => (elapsedMs / 1000).toFixed(1), [elapsedMs]);
   // Real engine lines once the server reports them; the canned reel only animates pre-first-poll / demo.
-  const shownLog = (hasReal ? progress!.lines : log).slice(-9);
+  // Show the FULL real history (scrollable) so no activity disappears mid-test; the
+  // canned demo reel stays trimmed since it's only a placeholder animation.
+  const shownLog = hasReal ? progress!.lines : log.slice(-9);
 
   return (
     <motion.div
@@ -160,7 +162,7 @@ export default function ScanProgress({
         role="log"
         aria-live="polite"
         aria-label="Live scan activity"
-        className="mt-5 h-36 overflow-auto rounded-xl border border-line bg-ink-900/80 p-3 font-mono text-[11.5px] leading-relaxed text-fg-muted"
+        className="mt-5 h-64 overflow-auto rounded-xl border border-line bg-ink-900/80 p-3 font-mono text-[11.5px] leading-relaxed text-fg-muted"
       >
         {shownLog.map((l, i) => (
           <motion.div

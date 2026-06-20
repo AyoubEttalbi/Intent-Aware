@@ -71,7 +71,13 @@ async def _verify(page, context, auth: dict, login_url: str) -> tuple[bool, str]
     try:
         for c in await context.cookies():
             name = c.get("name") or ""
-            if c.get("value") and _re.search(r"sess|sid|auth|token|jwt|connect", name, _re.I):
+            # Real apps name session cookies many ways (access/refresh/JWT/app-prefixed
+            # e.g. gcrm_access). Match broadly — a freshly-set credential cookie is the
+            # authoritative success signal, set immediately by the login response even
+            # before the (slow, under-load) client-side redirect fires.
+            if c.get("value") and _re.search(
+                    r"sess|sid|auth|token|jwt|connect|access|refresh|login|gcrm|csrf|remember|_user",
+                    name, _re.I):
                 return True, f"session cookie '{name}' set"
     except Exception:
         pass
@@ -120,8 +126,23 @@ async def login(context, auth: dict, base_url: str, log=print):
             user_sel = ('input[type=email], input[name*="email" i], input[id*="email" i], '
                         'input[autocomplete="username"], input[name*="user" i], input[type=text]')
 
-        await page.fill(user_sel, str(auth.get("username", "")))
-        await page.fill(pwd_sel, str(auth.get("password", "")))
+        # Robust fill: under heavy load (the scan runs many browsers + LLM procs under
+        # a tight CPU quota) the SPA can mount slowly, so explicitly wait for the field
+        # to be visible and retry once — a bare page.fill would hard-timeout at 30s and
+        # abort the whole login (the observed "Page.fill: Timeout 30000ms exceeded").
+        async def _robust_fill(sel, val):
+            last = None
+            for _ in range(2):
+                try:
+                    await page.wait_for_selector(sel, state="visible", timeout=20000)
+                    await page.fill(sel, val, timeout=12000)
+                    return
+                except Exception as e:
+                    last = e
+                    await page.wait_for_timeout(500)
+            raise last
+        await _robust_fill(user_sel, str(auth.get("username", "")))
+        await _robust_fill(pwd_sel, str(auth.get("password", "")))
         clicked = False
         if submit_sel:
             try:
@@ -136,13 +157,19 @@ async def login(context, auth: dict, base_url: str, log=print):
             except Exception:
                 pass
             await page.keyboard.press("Enter")
-        # let the login request + any redirect settle (SPA logins resolve async)
-        try:
-            await page.wait_for_load_state("networkidle", timeout=4000)
-        except Exception:
-            await page.wait_for_timeout(1500)
-
-        ok, msg = await _verify(page, context, auth, login_url)
+        # Verify by POLLING the real success signals for a few seconds: SPA logins
+        # redirect asynchronously and, under load, that redirect is slow — a single
+        # check right after submit would race it and false-report "still on login".
+        # The auth cookie is usually set first, so this typically passes within ~1s.
+        ok, msg = False, ""
+        for _ in range(16):   # ~8s budget
+            try:
+                await page.wait_for_load_state("networkidle", timeout=1500)
+            except Exception:
+                await page.wait_for_timeout(400)
+            ok, msg = await _verify(page, context, auth, login_url)
+            if ok:
+                break
         state = await context.storage_state() if ok else None
         return ok, state, msg
     except Exception as e:
