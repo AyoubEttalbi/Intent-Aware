@@ -56,6 +56,17 @@ def _pick_identifier_field(fields: list) -> dict | None:
     return nonpw[0]
 
 
+def _safe_url(url: str) -> str:
+    """Drop the query string before a URL goes anywhere loggable.
+
+    A native GET form submit (see the note in `login`) puts the credentials in
+    the URL as `/login?email=...&password=...`. Every message built here flows
+    into the job log, which the API keeps in full and the UI renders verbatim —
+    so a security product would otherwise print its user's password back at them.
+    """
+    return (url or "").split("?", 1)[0]
+
+
 async def _verify(page, context, auth: dict, login_url: str) -> tuple[bool, str]:
     """Confirm login by REAL signals — never by 'the password field disappeared'
     (a show-password toggle clears that and false-positives). We accept: an
@@ -63,11 +74,11 @@ async def _verify(page, context, auth: dict, login_url: str) -> tuple[bool, str]
     import re as _re
     sig = auth.get("success_url_contains")
     if sig and sig in page.url:
-        return True, f"reached {page.url}"
+        return True, f"reached {_safe_url(page.url)}"
     cur = page.url.rstrip("/").lower()
     lu = login_url.rstrip("/").lower()
     if cur != lu and not _re.search(r"/login|/signin|/sign-in|/auth|/connexion", cur):
-        return True, f"navigated to {page.url}"
+        return True, f"navigated to {_safe_url(page.url)}"
     try:
         for c in await context.cookies():
             name = c.get("name") or ""
@@ -81,8 +92,9 @@ async def _verify(page, context, auth: dict, login_url: str) -> tuple[bool, str]
                 return True, f"session cookie '{name}' set"
     except Exception:
         pass
-    return False, (f"still on the login page ({page.url}) — check the email/password, the login URL, "
-                   "or that the form's submit button was found (not a 'show password' toggle)")
+    return False, (f"still on the login page ({_safe_url(page.url)}) — check the email/password, "
+                   "the login URL, or that the form's submit button was found "
+                   "(not a 'show password' toggle)")
 
 
 async def login(context, auth: dict, base_url: str, log=print):
@@ -143,15 +155,32 @@ async def login(context, auth: dict, base_url: str, log=print):
             raise last
         await _robust_fill(user_sel, str(auth.get("username", "")))
         await _robust_fill(pwd_sel, str(auth.get("password", "")))
+        # Prefer CLICKING a real submit button. Many SPA logins (e.g. Next.js apps
+        # like GridCRM) render `<form method="get">` and authenticate via a JS
+        # onClick handler on the submit button — pressing Enter then triggers a
+        # *native GET submit* that leaks the credentials into the URL
+        # (`/login?email=…&password=…`) and never logs in. Try the model's button,
+        # then common DOM/text fallbacks, and only Enter as a last resort.
         clicked = False
-        if submit_sel:
+        candidates = [submit_sel] if submit_sel else []
+        candidates += [
+            "button[type=submit]", "input[type=submit]",
+            "button:has-text('Se connecter')", "button:has-text('Connexion')",
+            "button:has-text('Connecter')", "button:has-text('Sign in')",
+            "button:has-text('Log in')", "button:has-text('Login')",
+        ]
+        for sel in candidates:
+            if not sel:
+                continue
             try:
-                await page.click(submit_sel, timeout=5000)
+                await page.click(sel, timeout=4000)
                 clicked = True
+                break
             except Exception:
-                pass
+                continue
         if not clicked:
-            # most login forms also submit on Enter from the password field
+            # Last resort: submit on Enter from the password field. Works for POST
+            # forms; may not authenticate a native GET form (see note above).
             try:
                 await page.focus(pwd_sel)
             except Exception:

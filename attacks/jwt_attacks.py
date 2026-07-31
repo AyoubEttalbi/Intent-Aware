@@ -103,8 +103,14 @@ class JwtAttacksPlugin(AttackPlugin):
                     endpoint_key=ep.key, identity="anon",
                     detail=(f"A forged JWT ({label}) was accepted and returned the same protected data "
                             f"as the legitimate token. The server does not verify the token signature, "
-                            f"so anyone can mint a token for any user/role."),
+                            f"so anyone can mint a token for any user/role.\n\n"
+                            f"Forged token used:\n{forged}"),
                     evidence=Evidence(request=req, response=r, baseline_response=valid,
-                                      note=f"forged {label} token accepted"),
+                                      # Echo the forged token here too: it lives only in the
+                                      # Authorization header, which BOTH the curl repro and the
+                                      # persisted JSON mask as a credential — so without this the
+                                      # finding can't be reproduced. This token is one we minted,
+                                      # not the user's session, so it is safe to show.
+                                      note=f"forged {label} token accepted: {forged}"),
                     source=self.name)]
         return []

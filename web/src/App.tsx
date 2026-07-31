@@ -66,7 +66,9 @@ export default function App() {
         return;
       }
       setError(
-        `${(e as Error).message}. Is the Intent-Aware API running on :8000? You can still explore "Try a demo".`
+        // Ensure exactly one terminating period — API messages arrive both with
+        // and without one ("Failed to fetch" vs "Launch failed (500).").
+        `${(e as Error).message.replace(/\.?$/, ".")} You can still explore "Try a demo".`
       );
       setPhase("idle");
     }

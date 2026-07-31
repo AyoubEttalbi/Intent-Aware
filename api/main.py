@@ -32,7 +32,7 @@ class AnalysisRequest(BaseModel):
     resume_from_job_id: Optional[str] = None            # server-side resume: load a prior job's context
     allow_writes: Optional[bool] = False                # permit mutating probes (staging/disposable only!)
     extra_hosts: Optional[List[str]] = None             # additional in-scope hosts (split api.*/auth.* domains)
-    model: Optional[str] = None                         # LLM brain model (e.g. claude-haiku-4-5 / -sonnet-4-6)
+    model: Optional[str] = None                         # LLM brain model (e.g. claude-haiku-4-5 / -sonnet-5)
     effort: Optional[str] = None                        # reasoning effort: low|medium|high|xhigh|max
     max_assumptions: Optional[int] = None               # legacy, ignored by the v2 engine
 
@@ -67,9 +67,24 @@ def _derive_phase(msg: str, prev_phase: str, prev_pct: float):
     m = msg.lower()
     phase, pct = prev_phase, prev_pct
     if "qa page" in m or "qa crawl" in m or "🧭" in msg or "🔎" in msg:
-        mm = re.search(r"page (\d+)/(\d+)", m)
+        # The denominator is "∞" when the crawl is uncapped (max_pages=0), so it
+        # must be matched too — a digits-only pattern misses every uncapped line
+        # and the bar sticks at the phase floor for the whole crawl.
+        mm = re.search(r"page (\d+)/(\d+|∞|\?)", m)
         phase = "crawl"
-        pct = 0.14 + 0.16 * (int(mm.group(1)) / max(1, int(mm.group(2)))) if mm else 0.16
+        if not mm:
+            pct = 0.16
+        elif mm.group(2).isdigit() and int(mm.group(2)) > 0:
+            # Clamp: the anon-phase cap floors at 2, so a max_pages=1 run really
+            # does log "page 2/1" — an unclamped ratio would jump the bar to 0.46
+            # and (via the never-regress rule) pin it there for the whole scan.
+            ratio = min(1.0, int(mm.group(1)) / int(mm.group(2)))
+            pct = 0.14 + 0.16 * ratio
+        else:
+            # No denominator to divide by: approach the top of the crawl band
+            # asymptotically so progress still moves, and never overshoots it.
+            n = int(mm.group(1))
+            pct = 0.14 + 0.16 * (1 - 1 / (1 + n / 25))
     elif "discover" in m or "discovered" in m or "🔍" in msg:
         phase, pct = "discover", 0.08
     elif "run also as" in m or "🔑" in msg or "harvest" in m or "logging in" in m or "identit" in m:
@@ -128,7 +143,7 @@ def run_analysis_task(job_id: str, request: AnalysisRequest):
             identities=request.identities,
             max_requests=request.max_requests or 400,
             crawl_ui=bool(request.crawl_ui),
-            max_pages=request.max_pages or 20,
+            max_pages=request.max_pages if request.max_pages is not None else 20,  # 0 ⇒ no cap
             auth=request.auth,
             auth_identities=request.auth_identities,
             cross_browser=request.cross_browser,
@@ -194,6 +209,30 @@ async def analyze(request: AnalysisRequest, background_tasks: BackgroundTasks):
     
     return {"job_id": job_id, "status": "pending"}
 
+def _public_results(results):
+    """Strip live session credentials before a stored result leaves the server.
+
+    `RunContext.to_dict()` carries `auth_cookies` — the REAL session captured at
+    login on the target — and the engine returns it under `results.context` so a
+    scan can be resumed. That is fine on disk (resume_from_job_id reads it back
+    out of the stored row) but must never be served: GET /status is unauthenticated
+    and its payload lands in the browser.
+
+    Copy-on-write: only the affected nesting is rebuilt, so the stored row and
+    the resume path keep the real values.
+    """
+    if not isinstance(results, dict):
+        return results
+    ctx = results.get("context")
+    if not isinstance(ctx, dict) or not ctx.get("auth_cookies"):
+        return results
+    safe_ctx = dict(ctx)
+    safe_ctx["auth_cookies"] = {name: "<redacted>" for name in ctx["auth_cookies"]}
+    safe = dict(results)
+    safe["context"] = safe_ctx
+    return safe
+
+
 @app.get("/status/{job_id}")
 async def get_status(job_id: str):
     db = SessionLocal()
@@ -212,7 +251,7 @@ async def get_status(job_id: str):
         "status": job.status,
         "created_at": job.created_at,
         "completed_at": job.completed_at,
-        "results": job.results,
+        "results": _public_results(job.results),
         "error": job.error,
         "progress": progress,
     }

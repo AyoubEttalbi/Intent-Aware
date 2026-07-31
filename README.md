@@ -245,8 +245,8 @@ The result includes `findings`, `coverage`, `grade`, `report_markdown`, and the 
 | Var | Default | Notes |
 |---|---|---|
 | `LLM_PROVIDER` | `claude_code` | `claude_code` (CLI, no key) · `claude` (Anthropic API) · `ollama` |
-| `CLAUDE_CODE_MODEL` | `claude-sonnet-4-6` | model for the CLI provider |
-| `CLAUDE_MODEL` | `claude-sonnet-4-6` | model for the `claude` (API) provider; temperature is pinned to 0 |
+| `CLAUDE_CODE_MODEL` | `claude-sonnet-5` | model for the CLI provider |
+| `CLAUDE_MODEL` | `claude-sonnet-5` | model for the `claude` (API) provider; temperature is pinned to 0 |
 | `LLM_CACHE` | `1` | in-run response cache; `0` to disable |
 | `LLM_MAX_CALLS` | `200` | hard ceiling on LLM calls per run (brain degrades to heuristics past it) |
 | `PLAYWRIGHT_BROWSERS_PATH` | `./.browsers` | keep browsers project-local |

@@ -15,6 +15,8 @@ venv.bak/
 qa_agent.db
 crawler_log.txt
 latest_report.md
+# per-job scan reports — these name real target hosts and list live findings
+report-*.md
 test_results.json
 .vscode/
 .idea/
@@ -31,3 +33,11 @@ tmp_*
 *.bak-*
 # the private local-setup file (holds tokens/creds) must never be committed
 intent-aware-LOCAL-SETUP.md
+
+# Claude Code config dir — LOCAL ONLY, never committed. If anyone follows the
+# CLAUDE.md recipe and runs `CLAUDE_CONFIG_DIR=$(pwd)/.claude claude setup-token`,
+# this fills with the OAuth token AND session transcripts (projects/*.jsonl,
+# history.jsonl, shell-snapshots/) that routinely contain pasted secrets.
+# settings.json is ignored too: it records this machine's enabled plugins, which
+# is a per-developer choice, not a project dependency.
+.claude/

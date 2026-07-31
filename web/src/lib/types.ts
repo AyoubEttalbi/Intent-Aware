@@ -5,7 +5,7 @@ export type Confidence = "high" | "medium" | "low";
 export type Grade = "A" | "B" | "C" | "D" | "F";
 
 // LLM brain controls surfaced in the UI.
-export type LlmModel = "claude-haiku-4-5" | "claude-sonnet-4-6" | "claude-opus-4-8";
+export type LlmModel = "claude-haiku-4-5" | "claude-sonnet-5" | "claude-opus-5";
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ChatMessage {

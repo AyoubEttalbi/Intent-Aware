@@ -11,9 +11,11 @@ from __future__ import annotations
 import json
 
 from agent.llm import LLMClient
+from agent.prompt_safety import wrap_untrusted, data_framing_rule
 from core.models import Finding, Evidence, VulnClass, Severity, Confidence
 
-FLOW_SYS = "You are a senior QA engineer designing end-to-end user journeys. Return ONLY valid JSON."
+FLOW_SYS = ("You are a senior QA engineer designing end-to-end user journeys. "
+            "Return ONLY valid JSON." + data_framing_rule())
 
 FLOW_PROMPT = """App description:
 {description}
@@ -64,8 +66,16 @@ class FlowPlanner:
     def plan(self, description: str, sitemap: list, memory: str = "") -> list:
         if not sitemap:
             return []
-        prompt = FLOW_PROMPT.format(description=description or "(none)", memory=memory or "(nothing)",
-                                    sitemap=json.dumps(sitemap, indent=2)[:5000])
+        # ALL THREE are app-derived and must be fenced:
+        #  * sitemap — page intents, headings, placeholders, selectors
+        #  * memory  — context.brief(), built from remembered facts like
+        #              "<url> — <intent>", where intent is the model's summary of
+        #              attacker-controlled page content
+        #  * description — operator-supplied, still third-party to the brain
+        prompt = FLOW_PROMPT.format(
+            description=wrap_untrusted(description or "(none)"),
+            memory=wrap_untrusted(memory or "(nothing)"),
+            sitemap=wrap_untrusted(json.dumps(sitemap, indent=2)[:5000]))
         try:
             res = self.llm.ask_json(system_prompt=FLOW_SYS, user_prompt=prompt)
         except Exception:
@@ -74,15 +84,34 @@ class FlowPlanner:
 
 
 async def run_journey(context, journey: dict, base_url: str, log=print) -> Finding | None:
-    """Execute a journey in a stateful page. Returns a Finding if it breaks, else None."""
+    """Execute a journey in a stateful page. Returns a Finding if it breaks, else None.
+
+    Journeys are LLM-authored from app-derived text, and they run on the SHARED,
+    LOGGED-IN browser context. Every `goto` is therefore scope-checked: without
+    it, text injected into a crawled page could steer an authenticated browser
+    to an attacker host and fill/click there. Everything else in the engine is
+    host-allowlisted (core/http.py, spec_url, the crawler frontier) — this was
+    the one navigation path that wasn't.
+    """
+    from qa.crawler import _same_host          # local import: avoids a cycle
+    from urllib.parse import urljoin, urlparse
+
     page = await context.new_page()
     name = journey.get("name", "journey")
+    host = urlparse(base_url).hostname or ""
     trail = []
     try:
         for step in journey.get("steps", []):
             act = step.get("action")
             if act == "goto":
-                url = step.get("url") or base_url
+                # Resolve relative steps against the target first, so a legitimate
+                # "/dashboard" isn't dropped — then scope-check the result. urljoin
+                # keeps an absolute off-host URL absolute, so this cannot be used
+                # to smuggle one past the check.
+                url = urljoin(base_url + "/", step.get("url") or "")
+                if not _same_host(url, host):
+                    log(f"   ⚠️ journey '{name}': skipped off-scope step to {url}")
+                    continue
                 await page.goto(url, wait_until="domcontentloaded", timeout=15000)
                 trail.append(f"Go to {url}")
             elif act == "fill":

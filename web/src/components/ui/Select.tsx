@@ -116,8 +116,8 @@ export function Select<T extends string>({
 // Shared option sets for the brain controls.
 export const MODEL_OPTIONS: ReadonlyArray<SelectOption<string>> = [
   { value: "claude-haiku-4-5", label: "Haiku", hint: "fastest · cheapest" },
-  { value: "claude-sonnet-4-6", label: "Sonnet", hint: "balanced quality" },
-  { value: "claude-opus-4-8", label: "Opus", hint: "deepest · priciest" },
+  { value: "claude-sonnet-5", label: "Sonnet", hint: "balanced quality" },
+  { value: "claude-opus-5", label: "Opus", hint: "deepest · priciest" },
 ];
 
 export const EFFORT_OPTIONS: ReadonlyArray<SelectOption<string>> = [

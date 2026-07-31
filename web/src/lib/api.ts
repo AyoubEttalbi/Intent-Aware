@@ -57,7 +57,7 @@ export async function launchScan(req: ScanRequest): Promise<string> {
     crawl_ui: !!req.crawl_ui,
     allow_writes: !!req.allow_writes,
     max_requests: req.max_requests ?? 400,
-    max_pages: req.max_pages ?? 20,
+    max_pages: req.max_pages ?? 0,   // 0 = no page cap: crawl until the frontier is exhausted
   };
   if (req.extra_hosts?.length) body.extra_hosts = req.extra_hosts;
   if (req.auth_identities?.length) body.auth_identities = req.auth_identities;
@@ -92,16 +92,16 @@ export interface RunResult {
   jobId: string | null;
 }
 
-/** Launch a scan and poll to completion (tolerant of transient blips, with a deadline). */
+/** Launch a scan and poll to completion. NO time cap — polls until the scan
+ *  finishes server-side, the user cancels, or the API actually stops responding
+ *  (5 consecutive failed polls). Long authenticated scans can run a while. */
 export async function runScan(req: ScanRequest, h: RunHandlers = {}): Promise<RunResult> {
   const jobId = await launchScan(req);
   const started = Date.now();
-  const deadline = started + 12 * 60 * 1000; // 12-minute ceiling
   let fails = 0;
   // eslint-disable-next-line no-constant-condition
   while (true) {
     if (h.signal?.aborted) throw new DOMException("aborted", "AbortError");
-    if (Date.now() > deadline) throw new Error("Scan timed out — the API stopped responding.");
     await new Promise((res) => setTimeout(res, 1500));
     h.onTick?.(Date.now() - started);
     let state;

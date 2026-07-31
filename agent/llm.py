@@ -68,7 +68,7 @@ class LLMProvider(ABC):
         pass
 
 class ClaudeProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6",
+    def __init__(self, api_key: str, model: str = "claude-sonnet-5",
                  temperature: float = 0.0):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
@@ -134,7 +134,7 @@ class ClaudeCodeProvider(LLMProvider):
                        or shutil.which("claude") or "claude")
         # Cost-efficient default; set CLAUDE_CODE_MODEL='' to use the CLI's
         # own session default instead.
-        self.model = model if model is not None else os.getenv("CLAUDE_CODE_MODEL", "claude-sonnet-4-6")
+        self.model = model if model is not None else os.getenv("CLAUDE_CODE_MODEL", "claude-sonnet-5")
         # Reasoning effort: low | medium | high | xhigh | max (None = CLI default).
         self.effort = effort if effort is not None else (os.getenv("CLAUDE_CODE_EFFORT") or None)
         self.timeout = int(timeout if timeout is not None else os.getenv("CLAUDE_CODE_TIMEOUT", "900"))
@@ -185,7 +185,10 @@ class ClaudeCodeProvider(LLMProvider):
 # unbounded (slow, costly) model calls. Callers already degrade to heuristics on error.
 _LLM_CALLS = 0
 _LLM_CALLS_LOCK = threading.Lock()
-_LLM_MAX_CALLS = int(os.getenv("LLM_MAX_CALLS", "200"))
+# The configured ceiling, kept separately so a scan that asks for a SMALLER
+# budget can't permanently lower it for every later scan in the process.
+_LLM_DEFAULT_MAX = int(os.getenv("LLM_MAX_CALLS", "200"))
+_LLM_MAX_CALLS = _LLM_DEFAULT_MAX
 
 
 def _llm_budget_ok() -> bool:
@@ -195,6 +198,35 @@ def _llm_budget_ok() -> bool:
             return False
         _LLM_CALLS += 1
         return True
+
+
+def reset_llm_budget(max_calls: Optional[int] = None) -> None:
+    """Start a fresh per-run LLM budget. Call once at the top of a scan.
+
+    The counter is process-wide, so without this a long-lived API process burns
+    the ceiling permanently: after ~200 calls (two crawl-enabled scans) EVERY
+    later scan silently degrades to heuristics, while `brain_status()` still
+    reports the brain healthy because it only shells `claude --version`.
+
+    `max_calls=None` restores the configured LLM_MAX_CALLS ceiling — a scan that
+    asked for a smaller budget must not shrink every later scan in the process.
+
+    Caveat: the budget is process-wide, so two scans running CONCURRENTLY in one
+    process reset each other's counter. (Progress is per-job — this one is not.)
+    Single scan at a time is the assumption; revisit if that changes.
+    """
+    global _LLM_CALLS, _LLM_MAX_CALLS
+    with _LLM_CALLS_LOCK:
+        _LLM_CALLS = 0
+        _LLM_MAX_CALLS = (int(max_calls)
+                          if max_calls is not None and int(max_calls) > 0
+                          else _LLM_DEFAULT_MAX)
+
+
+def llm_budget_state() -> tuple:
+    """(used, ceiling) — for logging and the coverage/degraded notes."""
+    with _LLM_CALLS_LOCK:
+        return _LLM_CALLS, _LLM_MAX_CALLS
 
 
 def brain_status(timeout: int = 12):
@@ -245,7 +277,7 @@ def claude_chat(message: str, *, session_id: str, resume: bool = False,
     Returns (reply_text, session_id).
     """
     binary = os.getenv("CLAUDE_CODE_BIN") or shutil.which("claude") or "claude"
-    model = model or os.getenv("CLAUDE_CODE_MODEL") or "claude-sonnet-4-6"
+    model = model or os.getenv("CLAUDE_CODE_MODEL") or "claude-sonnet-5"
     cmd = [binary, "-p", "--output-format", "json", "--strict-mcp-config", "--model", model]
     if effort:
         cmd += ["--effort", effort]
@@ -299,7 +331,7 @@ class LLMClient:
             api_key = os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
                 raise ValueError("ANTHROPIC_API_KEY not found in .env")
-            return ClaudeProvider(api_key=api_key, model=os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6"))
+            return ClaudeProvider(api_key=api_key, model=os.getenv("CLAUDE_MODEL", "claude-sonnet-5"))
         
         elif self.provider_name == "ollama":
             base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")

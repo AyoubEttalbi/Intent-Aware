@@ -199,6 +199,41 @@ CREDENTIAL_HEADERS = {
     "authorization", "cookie", "x-api-key", "x-auth-token",
     "x-access-token", "x-session-token", "api-key", "x-csrf-token",
 }
+# Response side: the server hands back the session itself here.
+RESPONSE_CREDENTIAL_HEADERS = CREDENTIAL_HEADERS | {"set-cookie"}
+
+REDACTED = "<redacted>"
+
+
+def redact_headers(headers, names=CREDENTIAL_HEADERS) -> dict:
+    """Mask credential header VALUES, keeping the names visible for triage."""
+    if not isinstance(headers, dict):
+        return {}
+    return {k: (REDACTED if str(k).lower() in names else v) for k, v in headers.items()}
+
+
+def redact_finding_dict(d: dict) -> dict:
+    """Mask credentials in a serialised Finding (the `asdict()` output).
+
+    `HttpClient.send` stamps the headers it actually sent back onto the Request
+    so the evidence is faithful — which means the live `Cookie`/`Authorization`
+    is in there. `to_curl` masks them for the markdown report, but the JSON path
+    (Job.results, Bug.reproduction_json, GET /status) serialised them raw.
+    Mutates and returns `d`; `asdict()` already gave us a private copy.
+    """
+    ev = d.get("evidence")
+    if not isinstance(ev, dict):
+        return d
+    for slot in ("request", "baseline_request"):
+        part = ev.get(slot)
+        if isinstance(part, dict):
+            part["headers"] = redact_headers(part.get("headers"))
+    for slot in ("response", "baseline_response"):
+        part = ev.get(slot)
+        if isinstance(part, dict):
+            part["headers"] = redact_headers(part.get("headers"),
+                                             RESPONSE_CREDENTIAL_HEADERS)
+    return d
 
 
 def _form_encode(body) -> str:

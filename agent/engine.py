@@ -23,7 +23,8 @@ from typing import List, Optional
 from urllib.parse import urlparse
 
 from extractors.parser import OpenAPIParser
-from core.models import Identity, Endpoint, Request, Finding, Evidence, VulnClass, Severity, Confidence, Response
+from core.models import (Identity, Endpoint, Request, Finding, Evidence, VulnClass,
+                         Severity, Confidence, Response, redact_finding_dict)
 from core.context import RunContext
 from core.surface import build_surface, baseline_body
 from core.http import HttpClient
@@ -31,7 +32,7 @@ import attacks  # noqa: F401  (import registers all plugins)
 from attacks.base import all_plugins, AttackContext
 from agent.planner import Planner
 from detection.explainer import Explainer
-from agent.llm import brain_status
+from agent.llm import brain_status, LLMClient, reset_llm_budget, llm_budget_state
 from reports.founder_report import FounderReport
 
 _PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -71,7 +72,7 @@ class SecurityEngine:
                  cross_browser: Optional[list] = None,
                  resume_context: Optional[dict] = None,
                  allow_writes: bool = False, extra_hosts: Optional[list] = None,
-                 max_llm_calls: int = 60, output_dir: str = ".", log=print,
+                 max_llm_calls: Optional[int] = None, output_dir: str = ".", log=print,
                  llm_model: Optional[str] = None, llm_effort: Optional[str] = None,
                  max_seconds: Optional[int] = None):
         self.output_dir = output_dir or "."
@@ -112,6 +113,14 @@ class SecurityEngine:
                 spec_headers = c["headers"]
                 break
         self.parser = OpenAPIParser(allowed_hosts=hosts or None, headers=spec_headers)
+        # Keep the per-scan brain selection: the QA crawler builds its own LLM
+        # client later (see _run_qa), and that path is 2N+1 of a scan's 2N+3
+        # calls — dropping the selection here made the UI's picker a no-op.
+        self.llm_model = llm_model
+        self.llm_effort = llm_effort
+        # None ⇒ keep the LLM_MAX_CALLS env ceiling; run() resets the counter so
+        # the budget is per-scan rather than per-process.
+        self.max_llm_calls = max_llm_calls
         self.planner = Planner(model=llm_model, effort=llm_effort)
         self.explainer = Explainer(model=llm_model, effort=llm_effort)
         self._req_count = 0
@@ -228,6 +237,10 @@ class SecurityEngine:
 
     def run(self) -> dict:
         self._deadline = (time.monotonic() + self.max_seconds) if self.max_seconds else None
+        # 0a. Fresh LLM budget for THIS scan. The counter is process-wide, so a
+        #     long-lived API process would otherwise exhaust it permanently and
+        #     silently degrade every later scan to heuristics.
+        reset_llm_budget(self.max_llm_calls)
         # 0. Brain liveness — surface (loudly) when the LLM is unreachable, so a
         #    deterministic-only run is never silently mistaken for a full one. This
         #    is the exact failure mode of a hardened systemd service whose user
@@ -355,6 +368,16 @@ class SecurityEngine:
         except Exception as e:
             self.log(f"⚠️ explainer failed ({e}); using technical detail.")
 
+        # The brain degrades to heuristics once the call budget is gone, and it
+        # does so silently — say so, so a thin run isn't read as a clean one.
+        llm_used, llm_ceiling = llm_budget_state()
+        if llm_used >= llm_ceiling:
+            self.log(f"⚠️ LLM budget exhausted ({llm_used}/{llm_ceiling}) — later brain calls "
+                     "fell back to heuristics. Raise LLM_MAX_CALLS for fuller coverage.")
+            self._degraded.append(
+                f"AI call budget exhausted ({llm_used}/{llm_ceiling}); some pages were planned "
+                "and judged heuristically instead of by the AI brain.")
+
         authed = [i for i in self.identities if not i.is_anonymous]
         spec_loaded = isinstance(self._spec, dict) and bool(self._spec.get("paths"))
         # An endpoint is meaningfully testable only if there's something to probe
@@ -430,7 +453,8 @@ class SecurityEngine:
             crawl_deadline = now + max(30.0, (self._deadline - now) * 0.55)
         try:
             findings, shadow, artifacts = run_qa_crawl(
-                self.base_url, description=self.description, llm=None,
+                self.base_url, description=self.description,
+                llm=LLMClient(model=self.llm_model, effort=self.llm_effort),
                 max_pages=self.max_pages, context=self.context, auth=self.auth,
                 artifacts_dir=os.path.join(self.output_dir, ".qa_artifacts"),
                 log=self.log, deadline=crawl_deadline,
@@ -505,4 +529,6 @@ class SecurityEngine:
         d["vuln_class"] = f.vuln_class.value
         d["severity"] = f.severity.value
         d["confidence"] = f.confidence.value
-        return d
+        # This dict is persisted (Job.results / Bug.reproduction_json) and served
+        # by GET /status, so the live session headers must not ride along.
+        return redact_finding_dict(d)

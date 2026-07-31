@@ -42,6 +42,11 @@ _NOISE_QS = {"_rsc", "__nextdatareq", "__flight__", "_next", "__n", "rsc"}
 _NAV_HEADERS = ("rsc", "next-router-prefetch", "next-router-state-tree", "next-url",
                 "purpose", "x-nextjs-data")
 
+# Pages to spend on the anonymous pass when the crawl is UNCAPPED and we hold
+# credentials: enough to cover the public surface (landing, login, marketing,
+# legal) without draining the frontier before we ever log in.
+_UNCAPPED_ANON_PAGES = 8
+
 
 def _norm(u: str) -> str:
     return urldefrag(u or "")[0]
@@ -120,7 +125,23 @@ class QACrawler:
         self.engine = engine
         self.planner = QAPlanner(self.llm)
         self.judge = QAJudge(self.llm)
-        self.max_pages = max_pages
+        # max_pages <= 0 (or unset) ⇒ "uncapped": crawl until the link frontier
+        # is exhausted. That needs a BACKSTOP, because the frontier is not
+        # guaranteed to drain: `_maybe_enqueue` dedups by exact URL only, so an
+        # app with paginated or filtered listings (/customers?page=1..N, date
+        # ranges, per-row detail links) produces an effectively infinite
+        # same-host frontier. The other budgets do not save us — max_requests
+        # bounds the attack matrix, not crawl pages, and an exhausted LLM budget
+        # is swallowed by the planner/judge so the crawl just keeps walking.
+        # Without this the job never finishes: the row stays `pending` and the
+        # UI polls forever. Set CRAWL_MAX_PAGES=0 to genuinely remove the bound.
+        self._uncapped = not max_pages or max_pages <= 0
+        if self._uncapped:
+            backstop = int(os.getenv("CRAWL_MAX_PAGES", "500"))
+            self.max_pages = float("inf") if backstop <= 0 else backstop
+        else:
+            self.max_pages = max_pages
+        self._cap_str = "∞" if self.max_pages == float("inf") else str(self.max_pages)
         self.max_cases = max_cases_per_page
         self.storage_state = storage_state
         self.host = urlparse(self.base_url).hostname
@@ -185,7 +206,18 @@ class QACrawler:
                     pass
 
             # Phase 1 — crawl + fuzz the PUBLIC / login surface anonymously first.
-            anon_cap = max(2, self.max_pages // 3) if self.auth else self.max_pages
+            # Branch on `_uncapped` (the user's intent), NOT on max_pages: with a
+            # backstop applied, an "uncapped" run carries a large finite cap, and
+            # a third of that would burn the whole budget before we ever log in.
+            # The old one-liner `max(2, max_pages // 3)` was also a nan trap —
+            # `inf // 3` is nan and `max(2, nan)` returns 2, so "no cap" used to
+            # SHRINK the public pass to 2 pages.
+            if not self.auth:
+                anon_cap = self.max_pages
+            elif self._uncapped:
+                anon_cap = _UNCAPPED_ANON_PAGES   # short public pass, then log in
+            else:
+                anon_cap = max(2, self.max_pages // 3)
             await self._crawl_phase(pages, recs, cap=anon_cap, authed=False)
 
             # Log in once on the shared context, then re-seed for the authed pass.
@@ -254,7 +286,7 @@ class QACrawler:
                     await asyncio.sleep(0.15)
                     continue
                 tag = " (auth)" if authed else ""
-                self.log(f"🔎 QA page {n}/{self.max_pages}{tag}: {url}")
+                self.log(f"🔎 QA page {n}/{self._cap_str}{tag}: {url}")
                 try:
                     await self._process_url(page, rec, url, n)
                 except Exception as e:
