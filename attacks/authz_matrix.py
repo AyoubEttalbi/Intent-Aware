@@ -5,7 +5,9 @@ Runs the identity matrix against an endpoint to catch the two authorization bugs
 anon-only testing structurally misses:
 
   * Vertical (privilege escalation): a non-admin authenticated user can reach an
-    admin-restricted endpoint.
+    admin-restricted endpoint — and ONLY flagged when anon cannot read the same
+    content, since an admin-LOOKING path that is simply public crosses no
+    privilege boundary.
   * Horizontal (broken object-level auth): authenticated user A can read user B's
     private resource — and ONLY flagged when anon is blocked (otherwise it's plain
     IDOR, owned by the idor plugin, and not re-reported here).
@@ -62,16 +64,28 @@ class AuthzMatrixPlugin(AttackPlugin):
         for actor in [i for i in authed if i.role != "admin"]:
             req = Request(ep.method, ctx.url(), label=f"as {actor.name}")
             r = ctx.send(req, actor)
-            if r.ok and r.body not in (None, "", {}, []):
-                return [Finding(
-                    vuln_class=VulnClass.AUTHZ, severity=Severity.CRITICAL, confidence=Confidence.HIGH,
-                    title=f"Privilege escalation: non-admin can access {ep.key}",
-                    endpoint_key=ep.key, identity=actor.name,
-                    detail=(f"This endpoint looks admin-restricted, but the non-admin user "
-                            f"'{actor.name}' (role: {actor.role}) received {r.status} with data."),
-                    evidence=Evidence(request=req, response=r,
-                                      note=f"non-admin '{actor.name}' accessed an admin endpoint"),
-                    source=self.name)]
+            if not (r.ok and r.body not in (None, "", {}, [])):
+                continue
+            # Differential baseline: if anon already reads the SAME resource, the path
+            # merely LOOKS admin-restricted (e.g. Juice Shop's public
+            # /rest/admin/application-configuration) — no privilege boundary is
+            # crossed, so there is no escalation to report. Anon getting a different
+            # body (a login page, an error) still means the actor escalated.
+            anon_resp = ctx.send(Request(ep.method, ctx.url(), label="anon"), ctx.anon())
+            if anon_resp.ok and _same_resource(anon_resp.body, r.body):
+                continue
+            return [Finding(
+                vuln_class=VulnClass.AUTHZ, severity=Severity.CRITICAL, confidence=Confidence.HIGH,
+                title=f"Privilege escalation: non-admin can access {ep.key}",
+                endpoint_key=ep.key, identity=actor.name,
+                detail=(f"This endpoint looks admin-restricted, but the non-admin user "
+                        f"'{actor.name}' (role: {actor.role}) received {r.status} with data "
+                        f"while anonymous access did not return the same content."),
+                evidence=Evidence(request=req, response=r,
+                                  baseline_request=Request(ep.method, ctx.url(), label="anon"),
+                                  baseline_response=anon_resp,
+                                  note=f"non-admin '{actor.name}' accessed an admin endpoint that anon cannot read"),
+                source=self.name)]
         return []
 
     # --- horizontal: A reads B's resource (only when anon is blocked) -------
