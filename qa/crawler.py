@@ -47,6 +47,91 @@ _NAV_HEADERS = ("rsc", "next-router-prefetch", "next-router-state-tree", "next-u
 # legal) without draining the frontier before we ever log in.
 _UNCAPPED_ANON_PAGES = 8
 
+# --- modal / consent overlays ------------------------------------------------
+# A welcome modal or cookie bar sits ABOVE the page and swallows every click
+# behind it (Angular Material renders a full-viewport `.cdk-overlay-backdrop`).
+# The click then never reaches its target, the expected effect never happens,
+# and the judge — correctly reporting what it observed — calls a perfectly good
+# control broken. Phase 7 against OWASP Juice Shop produced three such false
+# positives ("Add to Basket does not add", "search shows no empty state",
+# "cookie banner does not dismiss") from one welcome modal. Real apps almost all
+# have a consent banner, so this dismissal is what keeps landing-page findings
+# honest. Dismiss the overlay the way a human does, before touching anything.
+#
+# Scoped deliberately: we only click inside an overlay/dialog/consent container,
+# and only controls whose label is unambiguously "make this go away" — never a
+# generic "Accept"/"Continue" that could be a real form's submit button.
+_OVERLAY_ROOTS = (
+    ".cdk-overlay-container", "[role=dialog]", "[aria-modal=true]", "dialog[open]",
+    ".cc-window", "#cookieconsent", "[class*=cookie-banner]", "[id*=cookie-banner]",
+    "[class*=consent]", "[id*=onetrust]", ".modal.show",
+)
+_OVERLAY_DISMISS_SELECTORS = (
+    "[aria-label*='close welcome' i]", "[aria-label*='dismiss cookie' i]",
+    "button[aria-label*='close' i]", "button[aria-label*='dismiss' i]",
+    ".close-dialog", ".cc-dismiss", ".cc-btn.cc-dismiss",
+    "#onetrust-accept-btn-handler", "[data-testid*='accept-cookie' i]",
+    "[data-testid*='close-modal' i]",
+)
+# Visible-text fallback, matched ONLY inside an overlay root above.
+_OVERLAY_DISMISS_TEXT = re.compile(
+    r"^\s*(ok(ay)?|got it|understood|i agree|agree|accept( all| cookies)?|"
+    r"allow all|dismiss|close|no thanks|me want it!?|x)\s*$", re.I)
+
+# A backdrop this large is blocking the page rather than decorating it.
+_BACKDROP_SELECTOR = ".cdk-overlay-backdrop, .modal-backdrop, [class*=overlay-backdrop]"
+
+
+async def _dismiss_overlays(page, log=None) -> bool:
+    """Close blocking modals / consent banners so later clicks reach the real UI.
+
+    Best-effort and non-fatal: any failure leaves the page exactly as it was.
+    Returns True if something was dismissed.
+    """
+    dismissed = False
+    for _ in range(4):                      # modal, then the consent bar behind it
+        try:
+            target = None
+            for sel in _OVERLAY_DISMISS_SELECTORS:
+                el = await page.query_selector(sel)
+                if el and await el.is_visible():
+                    target = el
+                    break
+            if target is None:
+                # Text fallback, scoped to an overlay container so we never hit
+                # an ordinary page button that happens to say "OK".
+                for root in _OVERLAY_ROOTS:
+                    container = await page.query_selector(root)
+                    if not container:
+                        continue
+                    for el in await container.query_selector_all("button, a, [role=button]"):
+                        try:
+                            if not await el.is_visible():
+                                continue
+                            if _OVERLAY_DISMISS_TEXT.match((await el.inner_text()) or ""):
+                                target = el
+                                break
+                        except Exception:
+                            continue
+                    if target is not None:
+                        break
+            if target is None:
+                break
+            # force=True: the backdrop we are trying to remove is itself what
+            # intercepts a normal click on the dismiss control.
+            await target.click(timeout=3000, force=True)
+            await page.wait_for_timeout(400)
+            dismissed = True
+            # Keep going: clearing the modal's backdrop often reveals a SECOND
+            # overlay (Juice Shop's welcome modal sits on top of its cookie bar).
+            # Stopping at the first dismissal left the bar up, and the judge then
+            # reported "cookie banner does not dismiss" — a false positive.
+        except Exception:
+            break
+    if dismissed and log:
+        log("   ↩︎ dismissed a modal/consent overlay before interacting")
+    return dismissed
+
 
 def _norm(u: str) -> str:
     return urldefrag(u or "")[0]
@@ -311,6 +396,10 @@ class QACrawler:
                 "form,button,[role=button],input,main,h1,h2,[data-testid]", timeout=4000)
         except Exception:
             await page.wait_for_timeout(1000)
+
+        # Clear blocking modals/consent banners BEFORE the screenshot and the page
+        # model, so evidence and test cases both reflect the app, not the overlay.
+        await _dismiss_overlays(page, self.log)
 
         shot = os.path.join(self.artifacts, f"page_{n}.png")
         try:
