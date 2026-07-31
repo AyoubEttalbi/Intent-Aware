@@ -465,6 +465,12 @@ class SecurityEngine:
         self._artifacts = artifacts
         infra = ("/openapi.json", "/docs", "/redoc", "/favicon.ico")
         known = {_canon_key(e.key) for e in endpoints}
+        # "Undocumented" is only meaningful against a spec that exists. With no spec
+        # discovered, EVERY endpoint the UI touches is trivially undocumented, and a
+        # finding claiming it "is not declared in the OpenAPI spec" is vacuous noise
+        # (the degraded[] note already tells the reader the surface is crawl-only).
+        # The endpoints below still join the attack surface either way.
+        had_spec = bool(known)
         # shadow is {key: meta}; tolerate a bare set/list for back-compat.
         shadow_items = shadow.items() if isinstance(shadow, dict) else [(k, {}) for k in shadow]
         for sk, meta in shadow_items:
@@ -497,14 +503,15 @@ class SecurityEngine:
                 auth_required=bool(meta.get("auth")),
                 request_content_type=meta.get("content_type", "json")))
             known.add(ckey)
-            findings.append(Finding(
-                vuln_class=VulnClass.UNDOCUMENTED_ENDPOINT, severity=Severity.LOW,
-                confidence=Confidence.MEDIUM,
-                title=f"Undocumented endpoint used by the UI: {key}",
-                endpoint_key=key,
-                evidence=Evidence(note="seen in browser network traffic, absent from the API spec"),
-                detail="The UI calls this endpoint but it is not declared in the OpenAPI spec.",
-                source="qa.shadow"))
+            if had_spec:
+                findings.append(Finding(
+                    vuln_class=VulnClass.UNDOCUMENTED_ENDPOINT, severity=Severity.LOW,
+                    confidence=Confidence.MEDIUM,
+                    title=f"Undocumented endpoint used by the UI: {key}",
+                    endpoint_key=key,
+                    evidence=Evidence(note="seen in browser network traffic, absent from the API spec"),
+                    detail="The UI calls this endpoint but it is not declared in the OpenAPI spec.",
+                    source="qa.shadow"))
         self.log(f"   shadow spec: {len(shadow)} endpoint(s) seen in the UI.")
 
         # Cross-browser smoke on the discovered UI pages (Firefox / WebKit).
