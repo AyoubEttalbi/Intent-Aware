@@ -113,17 +113,5 @@ export function Select<T extends string>({
   );
 }
 
-// Shared option sets for the brain controls.
-export const MODEL_OPTIONS: ReadonlyArray<SelectOption<string>> = [
-  { value: "claude-haiku-4-5", label: "Haiku", hint: "fastest · cheapest" },
-  { value: "claude-sonnet-5", label: "Sonnet", hint: "balanced quality" },
-  { value: "claude-opus-5", label: "Opus", hint: "deepest · priciest" },
-];
-
-export const EFFORT_OPTIONS: ReadonlyArray<SelectOption<string>> = [
-  { value: "low", label: "Low", hint: "quick, shallow" },
-  { value: "medium", label: "Medium", hint: "balanced" },
-  { value: "high", label: "High", hint: "more reasoning" },
-  { value: "xhigh", label: "Extra high", hint: "very thorough" },
-  { value: "max", label: "Max", hint: "slowest, deepest" },
-];
+// NOTE: brain model/effort options are NOT hardcoded here anymore — they come
+// from the backend catalog (GET /models) via web/src/lib/models.ts.

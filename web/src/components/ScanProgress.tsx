@@ -1,8 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
-import { Check, Loader2, Radar, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import {
+  AlertTriangle,
+  Brain,
+  Check,
+  Compass,
+  Flag,
+  KeyRound,
+  Loader2,
+  Radar,
+  Search,
+  Sparkles,
+  Swords,
+  X,
+} from "lucide-react";
 import { cn } from "../lib/ui";
 import type { JobProgress } from "../lib/types";
+import CrawlVisualizer, { parseCrawlTrail, isFindingLine } from "./CrawlVisualizer";
 
 // Backend phase -> which of the 5 visible stages is "active".
 const PHASE_TO_STAGE: Record<string, number> = {
@@ -86,6 +100,21 @@ export default function ScanProgress({
   // Show the FULL real history (scrollable) so no activity disappears mid-test; the
   // canned demo reel stays trimmed since it's only a placeholder animation.
   const shownLog = hasReal ? progress!.lines : log.slice(-9);
+  const findingCount = useMemo(
+    () => (hasReal ? progress!.lines.filter(isFindingLine).length : 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hasReal, progress?.lines]
+  );
+
+  // Live crawl trail, parsed from the real engine lines. Visible ONLY while the
+  // backend phase is "crawl" — it unmounts (with exit animation) the moment
+  // crawling ends, the scan finishes, or the run was a demo.
+  const trail = useMemo(
+    () => parseCrawlTrail(hasReal ? progress!.lines : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hasReal, progress?.lines.length]
+  );
+  const showCrawl = hasReal && progress!.phase === "crawl";
 
   return (
     <motion.div
@@ -156,26 +185,75 @@ export default function ScanProgress({
         })}
       </div>
 
+      {/* live crawl activity — mounts during the crawl phase only */}
+      <AnimatePresence>{showCrawl && <CrawlVisualizer key="crawl" trail={trail} />}</AnimatePresence>
+
       {/* live log */}
-      <div
-        ref={logRef}
-        role="log"
-        aria-live="polite"
-        aria-label="Live scan activity"
-        className="mt-5 h-64 overflow-auto rounded-xl border border-line bg-ink-900/80 p-3 font-mono text-[11.5px] leading-relaxed text-fg-muted"
-      >
-        {shownLog.map((l, i) => (
-          <motion.div
-            key={`${i}-${l.slice(0, 12)}`}
-            initial={{ opacity: 0, x: -6 }}
-            animate={{ opacity: 1, x: 0 }}
-            className={cn(l.startsWith("🚩") && "text-sev-high", l.startsWith("✅") && "text-ok")}
-          >
-            {l}
-          </motion.div>
-        ))}
-        <span className="inline-block h-3 w-1.5 animate-pulse bg-brand-cyan/70 align-middle" />
+      <div className="mt-5 overflow-hidden rounded-xl border border-line bg-ink-900/80">
+        <div className="flex items-center justify-between border-b border-line px-3 py-2">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
+            Live activity
+          </span>
+          {findingCount > 0 && (
+            <span className="rounded-md border border-sev-high/40 bg-sev-high/10 px-1.5 py-0.5 font-mono text-[11px] text-sev-high">
+              {findingCount} issue{findingCount === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+        <div
+          ref={logRef}
+          role="log"
+          aria-live="polite"
+          aria-label="Live scan activity"
+          className="h-64 overflow-auto p-3 font-mono text-[11.5px] leading-relaxed text-fg-muted"
+        >
+          {shownLog.map((l, i) => {
+            const tone = lineTone(l);
+            return (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, x: -6 }}
+                animate={{ opacity: 1, x: 0 }}
+                className={cn("flex items-start gap-2", tone.cls)}
+              >
+                {tone.icon && <span className="mt-0.5 shrink-0">{tone.icon}</span>}
+                <span className="min-w-0 flex-1 break-words">{l}</span>
+              </motion.div>
+            );
+          })}
+          <span className="inline-block h-3 w-1.5 animate-pulse bg-brand-cyan/70 align-middle" />
+        </div>
       </div>
     </motion.div>
   );
+}
+
+/** Map an engine log line to its icon + tint. Pure — cheap per render. */
+function lineTone(l: string): { icon: ReactNode; cls: string } {
+  const t = l.trimStart();
+  if (t.startsWith("🚩")) {
+    const cls = /critical/i.test(t)
+      ? "text-sev-critical"
+      : /high/i.test(t)
+        ? "text-sev-high"
+        : /medium/i.test(t)
+          ? "text-sev-medium"
+          : /low/i.test(t)
+            ? "text-sev-low"
+            : "text-sev-high";
+    return { icon: <Flag size={12} />, cls };
+  }
+  if (t.startsWith("✅")) return { icon: <Check size={12} />, cls: "text-ok" };
+  if (t.startsWith("⚠️") || t.startsWith("⚠"))
+    return { icon: <AlertTriangle size={12} />, cls: "text-sev-medium" };
+  if (t.startsWith("🧠")) return { icon: <Brain size={12} />, cls: "text-brand-cyan" };
+  if (t.startsWith("🔍")) return { icon: <Search size={12} />, cls: "text-fg" };
+  if (t.startsWith("🧭") || t.startsWith("🔎") || t.startsWith("🧪"))
+    return { icon: <Compass size={12} />, cls: "text-fg-muted" };
+  if (t.startsWith("⚔️") || t.startsWith("⚔"))
+    return { icon: <Swords size={12} />, cls: "text-fg-muted" };
+  if (t.startsWith("✨")) return { icon: <Sparkles size={12} />, cls: "text-brand-cyan" };
+  if (t.startsWith("🔑") || t.startsWith("🔓") || t.startsWith("🔐"))
+    return { icon: <KeyRound size={12} />, cls: "text-fg-muted" };
+  return { icon: null, cls: "" };
 }

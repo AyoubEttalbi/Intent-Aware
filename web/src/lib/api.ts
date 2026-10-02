@@ -55,6 +55,7 @@ export async function launchScan(req: ScanRequest): Promise<string> {
     spec_url: req.spec_url || "",
     description: req.description || "",
     crawl_ui: !!req.crawl_ui,
+    watch_browser: !!req.watch_browser,
     allow_writes: !!req.allow_writes,
     max_requests: req.max_requests ?? 400,
     max_pages: req.max_pages ?? 0,   // 0 = no page cap: crawl until the frontier is exhausted

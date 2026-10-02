@@ -4,9 +4,11 @@ export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type Confidence = "high" | "medium" | "low";
 export type Grade = "A" | "B" | "C" | "D" | "F";
 
-// LLM brain controls surfaced in the UI.
-export type LlmModel = "claude-haiku-4-5" | "claude-sonnet-5" | "claude-opus-5";
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+// LLM brain controls surfaced in the UI. Both are backend-driven free strings:
+// model ids come from GET /models (the opencode catalog), effort values from
+// the selected model's declared variants (undefined = model takes no effort).
+export type LlmModel = string;
+export type Effort = string;
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -118,6 +120,7 @@ export interface ScanRequest {
   spec_url?: string;
   description?: string;
   crawl_ui?: boolean;
+  watch_browser?: boolean;
   allow_writes?: boolean;
   extra_hosts?: string[];
   max_requests?: number;

@@ -3,11 +3,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MessageSquareText, Send, X, Clock, Cpu, Gauge, Sparkles } from "lucide-react";
-import type { ChatMessage, LlmModel, Effort } from "../lib/types";
+import type { ChatMessage } from "../lib/types";
 import { sendChat, closeChat } from "../lib/api";
 import { cn } from "../lib/ui";
 import { Spinner } from "./ui/Primitives";
-import { Select, MODEL_OPTIONS, EFFORT_OPTIONS } from "./ui/Select";
+import { Select } from "./ui/Select";
+import { useBrainModels, effortOptionsFor, preferredEffort, FALLBACK_DEFAULT_MODEL } from "../lib/models";
 
 const SUGGESTIONS = [
   "What should I fix first?",
@@ -23,18 +24,19 @@ function fmtClock(s: number): string {
 
 export default function TestChat({
   jobId,
-  model: model0 = "claude-haiku-4-5",
+  model: model0 = FALLBACK_DEFAULT_MODEL,
   effort: effort0 = "medium",
 }: {
   jobId: string;
-  model?: LlmModel;
-  effort?: Effort;
+  model?: string;
+  effort?: string;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [model, setModel] = useState<LlmModel>(model0);
-  const [effort, setEffort] = useState<Effort>(effort0);
+  const { modelOptions, variantsById, defaultModel, ready } = useBrainModels();
+  const [model, setModel] = useState<string>(model0);
+  const [effort, setEffort] = useState<string | undefined>(effort0);
   const [closed, setClosed] = useState(false);
   const [idleSeconds, setIdleSeconds] = useState(600);
   const [idleLeft, setIdleLeft] = useState<number | null>(null);
@@ -42,6 +44,23 @@ export default function TestChat({
   const taRef = useRef<HTMLTextAreaElement>(null);
 
   const live = messages.length > 0 && !closed;
+
+  useEffect(() => {
+    if (!ready) return;
+    const ids = new Set(modelOptions.map((o) => o.value));
+    const m = ids.has(model) ? model : defaultModel;
+    if (m !== model) setModel(m);
+    const vs = variantsById[m] ?? [];
+    setEffort((e) => (e !== undefined && vs.includes(e) ? e : preferredEffort(vs)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
+
+  function pickModel(v: string) {
+    setModel(v);
+    setEffort(preferredEffort(variantsById[v]));
+  }
+
+  const effortOpts = effortOptionsFor(variantsById[model]);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -125,17 +144,18 @@ export default function TestChat({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Select<LlmModel>
+          <Select<string>
             value={model}
-            onChange={setModel}
-            options={MODEL_OPTIONS as ReadonlyArray<{ value: LlmModel; label: string; hint?: string }>}
+            onChange={pickModel}
+            options={modelOptions}
             icon={<Cpu size={14} />}
             align="right"
           />
-          <Select<Effort>
-            value={effort}
-            onChange={setEffort}
-            options={EFFORT_OPTIONS as ReadonlyArray<{ value: Effort; label: string; hint?: string }>}
+          <Select<string>
+            value={effort ?? ""}
+            onChange={(v) => setEffort(v || undefined)}
+            options={effortOpts.length ? effortOpts : [{ value: "", label: "N/A" }]}
+            disabled={!effortOpts.length}
             icon={<Gauge size={14} />}
             align="right"
           />

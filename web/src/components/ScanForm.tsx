@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Play, Sparkles, ChevronDown, ShieldAlert, Plus, Trash2, KeyRound, Cpu, Gauge } from "lucide-react";
-import type { ScanRequest, AuthIdentity, AuthAdapterType, LlmModel, Effort } from "../lib/types";
+import type { ScanRequest, AuthIdentity, AuthAdapterType } from "../lib/types";
 import { cn } from "../lib/ui";
 import { Toggle, Spinner } from "./ui/Primitives";
-import { Select, MODEL_OPTIONS, EFFORT_OPTIONS, type SelectOption } from "./ui/Select";
+import { Select } from "./ui/Select";
+import { useBrainModels, effortOptionsFor, preferredEffort, FALLBACK_DEFAULT_MODEL } from "../lib/models";
 
 const ADAPTER_TYPES: { value: AuthAdapterType; label: string }[] = [
   { value: "form", label: "Form login" },
@@ -28,13 +29,34 @@ export default function ScanForm({
   const [description, setDescription] = useState("");
   const [advanced, setAdvanced] = useState(false);
   const [crawlUi, setCrawlUi] = useState(false);
+  const [watchBrowser, setWatchBrowser] = useState(false);
   const [allowWrites, setAllowWrites] = useState(false);
   const [extraHosts, setExtraHosts] = useState("");
   const [maxRequests, setMaxRequests] = useState(400);
   const [identities, setIdentities] = useState<AuthIdentity[]>([]);
-  const [model, setModel] = useState<LlmModel>("claude-haiku-4-5");
-  const [effort, setEffort] = useState<Effort>("medium");
+  const { modelOptions, variantsById, defaultModel, ready } = useBrainModels();
+  const [model, setModel] = useState<string>(FALLBACK_DEFAULT_MODEL);
+  const [effort, setEffort] = useState<string | undefined>("medium");
   const [err, setErr] = useState("");
+
+  // Snap to the catalog default once it loads, and keep effort inside the
+  // selected model's declared variants (undefined = model takes no effort).
+  useEffect(() => {
+    if (!ready) return;
+    const ids = new Set(modelOptions.map((o) => o.value));
+    const m = ids.has(model) ? model : defaultModel;
+    if (m !== model) setModel(m);
+    const vs = variantsById[m] ?? [];
+    setEffort((e) => (e !== undefined && vs.includes(e) ? e : preferredEffort(vs)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
+
+  function pickModel(v: string) {
+    setModel(v);
+    setEffort(preferredEffort(variantsById[v]));
+  }
+
+  const effortOpts = effortOptionsFor(variantsById[model]);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -52,6 +74,7 @@ export default function ScanForm({
       spec_url: specUrl.trim() || undefined,
       description: description.trim() || undefined,
       crawl_ui: crawlUi,
+      watch_browser: watchBrowser && crawlUi,
       allow_writes: allowWrites,
       extra_hosts: extraHosts.trim() ? extraHosts.split(",").map((h) => h.trim()).filter(Boolean) : undefined,
       max_requests: maxRequests,
@@ -151,6 +174,15 @@ export default function ScanForm({
                 </div>
                 <Toggle checked={crawlUi} onChange={setCrawlUi} label="Crawl the UI" />
               </div>
+              {crawlUi && (
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-fg">Watch browser</div>
+                    <div className="text-xs text-fg-subtle">Pop a visible Chrome window and watch the crawl live</div>
+                  </div>
+                  <Toggle checked={watchBrowser} onChange={setWatchBrowser} label="Watch browser" />
+                </div>
+              )}
 
               <div className="flex items-center justify-between">
                 <div>
@@ -236,20 +268,24 @@ export default function ScanForm({
       {/* brain controls — model + reasoning effort for this scan */}
       <div className="mt-5 flex flex-wrap items-center gap-2">
         <span className="mr-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">Brain</span>
-        <Select<LlmModel>
+        <Select<string>
           value={model}
-          onChange={setModel}
+          onChange={pickModel}
           label="Model"
           icon={<Cpu size={14} />}
-          options={MODEL_OPTIONS as ReadonlyArray<SelectOption<LlmModel>>}
+          options={modelOptions}
         />
-        <Select<Effort>
-          value={effort}
-          onChange={setEffort}
+        <Select<string>
+          value={effort ?? ""}
+          onChange={(v) => setEffort(v || undefined)}
           label="Effort"
           icon={<Gauge size={14} />}
-          options={EFFORT_OPTIONS as ReadonlyArray<SelectOption<Effort>>}
+          options={effortOpts.length ? effortOpts : [{ value: "", label: "N/A" }]}
+          disabled={!effortOpts.length}
         />
+        {!effortOpts.length && (
+          <span className="text-xs text-fg-subtle">this model takes no effort level</span>
+        )}
       </div>
 
       {err && <p className="mt-4 text-sm text-sev-critical">{err}</p>}
