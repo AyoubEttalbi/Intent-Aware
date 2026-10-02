@@ -37,15 +37,16 @@ Return ONLY the JSON object."""
 
 
 class Explainer:
-    def __init__(self, model=None, effort=None):
+    def __init__(self, model=None, effort=None, log=None):
         self._llm = None
         self._model = model
         self._effort = effort
+        self._log = log
 
     @property
     def llm(self) -> LLMClient:
         if self._llm is None:
-            self._llm = LLMClient(model=self._model, effort=self._effort)
+            self._llm = LLMClient(model=self._model, effort=self._effort, log=self._log)
         return self._llm
 
     def enrich(self, findings: List[Finding], description: str = "") -> None:
@@ -63,7 +64,8 @@ class Explainer:
                                          findings=wrap_untrusted(json.dumps(brief, indent=2)))
         by_idx = {}
         try:
-            res = self.llm.ask_json(system_prompt=EXPLAINER_SYS, user_prompt=prompt)
+            res = self.llm.ask_json(system_prompt=EXPLAINER_SYS, user_prompt=prompt,
+                                     label="explainer")
             for it in (res or {}).get("findings", []) if isinstance(res, dict) else []:
                 if isinstance(it, dict) and "index" in it:
                     by_idx[it["index"]] = it

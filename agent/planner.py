@@ -47,15 +47,16 @@ Return ONLY the JSON object."""
 
 
 class Planner:
-    def __init__(self, model=None, effort=None):
+    def __init__(self, model=None, effort=None, log=None):
         self._llm = None
         self._model = model
         self._effort = effort
+        self._log = log
 
     @property
     def llm(self) -> LLMClient:
         if self._llm is None:
-            self._llm = LLMClient(model=self._model, effort=self._effort)
+            self._llm = LLMClient(model=self._model, effort=self._effort, log=self._log)
         return self._llm
 
     def plan(self, description: str, endpoints: List, memory: str = "") -> dict:
@@ -73,7 +74,8 @@ class Planner:
                                        memory=wrap_untrusted(memory or "(nothing yet)"),
                                        endpoints=wrap_untrusted(json.dumps(brief, indent=2)))
         try:
-            res = self.llm.ask_json(system_prompt=PLANNER_SYS, user_prompt=prompt)
+            res = self.llm.ask_json(system_prompt=PLANNER_SYS, user_prompt=prompt,
+                                     label="planner")
         except Exception:
             res = None
 

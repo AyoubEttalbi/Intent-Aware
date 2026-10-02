@@ -10,7 +10,8 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 from agent.engine import SecurityEngine
-from agent.llm import claude_chat
+from agent.llm import brain_chat, opencode_models, OpenCodeProvider
+from agent.prompt_safety import wrap_untrusted, data_framing_rule
 from db.models import init_db, SessionLocal, Job, Bug
 
 init_db()
@@ -25,6 +26,7 @@ class AnalysisRequest(BaseModel):
     max_requests: Optional[int] = 400
     crawl_ui: Optional[bool] = False                    # also run the smart QA crawler
     max_pages: Optional[int] = 20                       # QA crawl page budget
+    watch_browser: Optional[bool] = False               # drive a visible Chrome over CDP (falls back headless)
     auth: Optional[Dict[str, Any]] = None               # {type, username, password, login_url, ...} for gated crawl
     auth_identities: Optional[List[Dict[str, Any]]] = None  # multi-role: [{name, role, auth adapter, owned_resource_ids}]
     cross_browser: Optional[List[str]] = None           # e.g. ["firefox", "webkit"]
@@ -143,6 +145,7 @@ def run_analysis_task(job_id: str, request: AnalysisRequest):
             identities=request.identities,
             max_requests=request.max_requests or 400,
             crawl_ui=bool(request.crawl_ui),
+            watch_browser=bool(request.watch_browser),
             max_pages=request.max_pages if request.max_pages is not None else 20,  # 0 ⇒ no cap
             auth=request.auth,
             auth_identities=request.auth_identities,
@@ -257,11 +260,11 @@ async def get_status(job_id: str):
     }
 
 # ── Per-test chat sessions ────────────────────────────────────────────────
-# Each completed scan owns a claude session seeded with THAT scan's findings, so
+# Each completed scan owns a brain session seeded with THAT scan's findings, so
 # follow-ups ("how do I fix the IDOR?") stay in the test's context and never
-# cross-contaminate other tests. A turn is an ephemeral `claude -p --resume`
-# subprocess — nothing lingers between messages — and an idle TTL drops the
-# stored session so state can't pile up on the VPS.
+# cross-contaminate other tests. A turn is an ephemeral brain subprocess
+# (`claude -p --resume` or `opencode run --session`) — nothing lingers between
+# messages — and an idle TTL drops the stored session so state can't pile up.
 CHAT_IDLE_SECONDS = int(os.getenv("CHAT_IDLE_SECONDS", "600"))   # 10 min of silence -> closed
 _CHAT: Dict[str, Dict[str, Any]] = {}
 _CHAT_LOCK = threading.Lock()
@@ -283,20 +286,26 @@ def _chat_context(job) -> str:
         "Answer the founder's questions about THIS scan only: explain issues in plain language, "
         "help prioritise, and suggest concrete fixes. Be concrete, calm, and jargon-free. You have "
         "no tools — reason only from the findings below, and never invent issues that aren't listed.",
+        data_framing_rule(),
         "",
         f"Target: {res.get('target') or job.base_url}",
         f"Grade: {res.get('grade')} ({res.get('score')}/100)   Findings: {len(finds)}",
     ]
     if cov.get("degraded"):
         lines.append("Scan caveats: " + "; ".join(list(cov.get("degraded", []))[:4]))
-    lines.append("\nFindings:")
+    # Findings are app-derived (titles/descriptions may echo attacker content),
+    # so they travel fenced as untrusted data — never as instructions. This
+    # matters doubly for the opencode brain, where this context becomes the
+    # sandboxed agent's system prompt rather than a user message.
+    finding_lines = ["\nFindings:"]
     for i, f in enumerate(finds[:25]):
-        lines.append(
+        finding_lines.append(
             f"{i+1}. [{f.get('severity')}] {f.get('title')} — {f.get('endpoint_key')}\n"
             f"   why it matters: {(f.get('impact') or f.get('explanation') or f.get('detail') or '')[:240]}\n"
             f"   suggested fix:  {(f.get('fix') or '(none given)')[:240]}")
     if not finds:
-        lines.append("(no findings — the scan surfaced nothing exploitable)")
+        finding_lines.append("(no findings — the scan surfaced nothing exploitable)")
+    lines.append(wrap_untrusted("\n".join(finding_lines)))
     return "\n".join(lines)
 
 
@@ -309,7 +318,7 @@ class ChatRequest(BaseModel):
 @app.post("/chat/{job_id}")
 def chat(job_id: str, body: ChatRequest):
     """Ask a question in the context of a finished scan. Sync def -> FastAPI runs
-    it in a worker thread, so the blocking claude subprocess never stalls the loop."""
+    it in a worker thread, so the blocking brain subprocess never stalls the loop."""
     msg = (body.message or "").strip()
     if not msg:
         raise HTTPException(status_code=400, detail="empty message")
@@ -327,7 +336,7 @@ def chat(job_id: str, body: ChatRequest):
         sid = str(uuid.uuid4()) if first else sess["session_id"]
         system = _chat_context(job)   # re-seed every turn so context never drifts
         try:
-            reply, sid = claude_chat(msg, session_id=sid, resume=not first, system=system,
+            reply, sid = brain_chat(msg, session_id=sid, resume=not first, system=system,
                                      model=body.model, effort=body.effort)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"chat brain error: {e}")
@@ -349,6 +358,21 @@ def chat_close(job_id: str):
 @app.get("/")
 async def root():
     return {"message": "Intent-Aware QA Agent API is running."}
+
+
+@app.get("/models")
+def list_models(refresh: bool = False):
+    """Brain-model catalog for the UI picker (opencode provider).
+
+    Parsed live from `opencode models --verbose` (cached 1h, `?refresh=1`
+    forces a models.dev refetch). `variants` drives the effort picker: empty
+    means the model takes no --variant and the UI disables effort.
+    """
+    return {
+        "provider": os.getenv("LLM_PROVIDER", "claude"),
+        "default": OpenCodeProvider._DEFAULT_MODEL,
+        "models": opencode_models(refresh=refresh),
+    }
 
 if __name__ == "__main__":
     import uvicorn

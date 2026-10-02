@@ -68,6 +68,7 @@ class SecurityEngine:
     def __init__(self, spec_url: str = "", description: str = "", base_url: str = "",
                  identities: Optional[list] = None, max_requests: int = 400,
                  crawl_ui: bool = False, max_pages: int = 20,
+                 watch_browser: bool = False,
                  auth: Optional[dict] = None, auth_identities: Optional[list] = None,
                  cross_browser: Optional[list] = None,
                  resume_context: Optional[dict] = None,
@@ -83,6 +84,7 @@ class SecurityEngine:
         self.max_requests = max_requests
         self.crawl_ui = crawl_ui
         self.max_pages = max_pages
+        self.watch_browser = watch_browser
         self.auth = auth
         self.auth_identities = auth_identities or []
         # Feed the UI crawl a login: when no explicit single `auth` was given, use
@@ -121,8 +123,8 @@ class SecurityEngine:
         # None ⇒ keep the LLM_MAX_CALLS env ceiling; run() resets the counter so
         # the budget is per-scan rather than per-process.
         self.max_llm_calls = max_llm_calls
-        self.planner = Planner(model=llm_model, effort=llm_effort)
-        self.explainer = Explainer(model=llm_model, effort=llm_effort)
+        self.planner = Planner(model=llm_model, effort=llm_effort, log=self.log)
+        self.explainer = Explainer(model=llm_model, effort=llm_effort, log=self.log)
         self._req_count = 0
         self._req_lock = threading.Lock()
         self._spec: dict = {}
@@ -298,7 +300,8 @@ class SecurityEngine:
                 self.identities.append(idn)
         if browser_cfgs:
             from qa.auth import capture_identities
-            for idn in capture_identities(browser_cfgs, self.base_url, self.log):
+            for idn in capture_identities(browser_cfgs, self.base_url, self.log,
+                                             watch=bool(self.watch_browser and self.crawl_ui)):
                 self.identities.append(idn)
         if not any(not i.is_anonymous for i in self.identities) and self.context.auth_cookies:
             self.identities.append(Identity(
@@ -454,11 +457,12 @@ class SecurityEngine:
         try:
             findings, shadow, artifacts = run_qa_crawl(
                 self.base_url, description=self.description,
-                llm=LLMClient(model=self.llm_model, effort=self.llm_effort),
+                llm=LLMClient(model=self.llm_model, effort=self.llm_effort, log=self.log),
                 max_pages=self.max_pages, context=self.context, auth=self.auth,
                 artifacts_dir=os.path.join(self.output_dir, ".qa_artifacts"),
                 log=self.log, deadline=crawl_deadline,
-                concurrency=int(os.getenv("CRAWL_CONCURRENCY", "4")))
+                concurrency=int(os.getenv("CRAWL_CONCURRENCY", "4")),
+                watch=bool(self.watch_browser and self.crawl_ui))
         except Exception as e:
             self.log(f"⚠️ QA crawl failed ({e}); continuing with API tests only.")
             return []

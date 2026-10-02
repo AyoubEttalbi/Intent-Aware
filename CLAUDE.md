@@ -11,6 +11,16 @@ deterministic plugins are the hands. Read [README.md](README.md) for the full pi
 - The brain is the local **Claude Code CLI** (`claude -p`, provider `claude_code` in `agent/llm.py`),
   run **sandboxed**: all tools disabled, `--strict-mcp-config`, cwd pinned, and the child env strips
   `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` (see Operations below — this matters).
+- Alternative brain: **opencode CLI** (`LLM_PROVIDER=opencode`, `OpenCodeProvider` in `agent/llm.py`).
+  Sandboxed via the `intent-brain` agent file (`.opencode/agents/intent-brain.md`: every tool
+  permission denied incl. MCP wildcards + `"*"` catch-all, temperature 0) plus `--pure`,
+  cwd/`--dir` pinned, an allowlisted child env, and stdin prompts. The CLI only resolves
+  agents from files (env-injected config is ignored in 1.18.x — probed, do not rely on it),
+  and `run` has no system channel, so the per-call system prompt is composed into the
+  message. Model is a fully-qualified `provider/model` id (`OPENCODE_MODEL`, default
+  the fireworks-ai `qwen-max-latest` router). Zen free-tier models (incl. `big-pickle`)
+  403 against sandboxed custom agents — verified by probe, never default one.
+  Auth is `opencode auth`, no key in `.env`.
 - Self-contained runtime: own `.venv` and project-local Playwright browsers (`PLAYWRIGHT_BROWSERS_PATH=./.browsers`).
 - **Historical note (was VPS-hosted):** it ran on a VPS *shared with the production GridCRM*, so the rule
   there was "never touch anything outside the project dir, never change the host, no `apt install`." That

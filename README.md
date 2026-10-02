@@ -178,8 +178,9 @@ Deterministic QA oracles also catch broken links (4xx), JavaScript exceptions, a
 
 ## Getting started
 
-Requires Python 3.11+ and the Claude Code CLI installed & logged in (for the default `claude_code`
-provider).
+Requires Python 3.11+ and a logged-in LLM brain: the Claude Code CLI (for the default `claude_code`
+provider) or the opencode CLI with at least one funded provider (`opencode auth login`,
+then `LLM_PROVIDER=opencode` — see `.env.example` for the verified model).
 
 ```bash
 # 1. install
@@ -244,8 +245,9 @@ The result includes `findings`, `coverage`, `grade`, `report_markdown`, and the 
 
 | Var | Default | Notes |
 |---|---|---|
-| `LLM_PROVIDER` | `claude_code` | `claude_code` (CLI, no key) · `claude` (Anthropic API) · `ollama` |
+| `LLM_PROVIDER` | `claude_code` | `claude_code` (CLI, no key) · `claude` (Anthropic API) · `opencode` (opencode CLI, no key) · `ollama` |
 | `CLAUDE_CODE_MODEL` | `claude-sonnet-5` | model for the CLI provider |
+| `OPENCODE_MODEL` | fireworks `qwen-max-latest` router | fully-qualified `provider/model` for `LLM_PROVIDER=opencode` (Zen free-tier models reject the sandboxed agent — see `.env.example`) |
 | `CLAUDE_MODEL` | `claude-sonnet-5` | model for the `claude` (API) provider; temperature is pinned to 0 |
 | `LLM_CACHE` | `1` | in-run response cache; `0` to disable |
 | `LLM_MAX_CALLS` | `200` | hard ceiling on LLM calls per run (brain degrades to heuristics past it) |

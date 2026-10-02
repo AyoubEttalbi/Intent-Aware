@@ -77,7 +77,8 @@ class FlowPlanner:
             memory=wrap_untrusted(memory or "(nothing)"),
             sitemap=wrap_untrusted(json.dumps(sitemap, indent=2)[:5000]))
         try:
-            res = self.llm.ask_json(system_prompt=FLOW_SYS, user_prompt=prompt)
+            res = self.llm.ask_json(system_prompt=FLOW_SYS, user_prompt=prompt,
+                                     label="flow-planner")
         except Exception:
             res = None
         return (res or {}).get("journeys", []) if isinstance(res, dict) else []

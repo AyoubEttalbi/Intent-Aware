@@ -136,7 +136,8 @@ class QAJudge:
                                      items=wrap_untrusted(json.dumps(brief, indent=2)[:7000]))
         verdicts = {}
         try:
-            res = self.llm.ask_json(system_prompt=JUDGE_SYS, user_prompt=prompt)
+            res = self.llm.ask_json(system_prompt=JUDGE_SYS, user_prompt=prompt,
+                                     label="qa-judge")
             for v in (res or {}).get("verdicts", []) if isinstance(res, dict) else []:
                 if isinstance(v, dict) and "id" in v:
                     verdicts[v["id"]] = v

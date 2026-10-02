@@ -84,7 +84,8 @@ class QAPlanner:
                                   memory=wrap_untrusted(memory or "(nothing yet)"),
                                   page=wrap_untrusted(json.dumps(page_model, indent=2)[:6000]))
         try:
-            res = self.llm.ask_json(system_prompt=QA_SYS, user_prompt=prompt)
+            res = self.llm.ask_json(system_prompt=QA_SYS, user_prompt=prompt,
+                                     label="qa-planner")
         except Exception:
             res = None
         if not isinstance(res, dict):
