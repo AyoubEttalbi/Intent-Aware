@@ -207,28 +207,48 @@ async def login(context, auth: dict, base_url: str, log=print):
         await page.close()
 
 
-def capture_identities(auth_identities: list, base_url: str, log=print) -> list:
+def capture_identities(auth_identities: list, base_url: str, log=print,
+                       watch: bool = False) -> list:
     """Log in each configured identity and return Identity objects carrying session cookies."""
     import asyncio
     try:
-        return asyncio.run(_capture_identities_async(auth_identities, base_url, log))
+        return asyncio.run(_capture_identities_async(auth_identities, base_url, log, watch))
     except Exception as e:
         log(f"⚠️ identity capture failed: {e}")
         return []
 
 
-async def _capture_identities_async(auth_identities: list, base_url: str, log):
+async def _capture_identities_async(auth_identities: list, base_url: str, log, watch: bool = False):
     from playwright.async_api import async_playwright
     from core.models import Identity
+    import asyncio
+    from qa.visible_chrome import ensure_visible_chrome, release_visible_chrome
     out = []
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        vb, browser, owned = None, None, True
+        if watch:
+            try:
+                vb = await asyncio.to_thread(ensure_visible_chrome, log)
+            except Exception as e:
+                log(f"⚠️ visible browser probe failed ({e}); continuing headless.")
+                vb = None
+            if vb is not None:
+                try:
+                    browser = await p.chromium.connect_over_cdp(vb.endpoint)
+                    owned = False
+                except Exception as e:
+                    log(f"⚠️ visible browser refused CDP ({e}); continuing headless.")
+                    release_visible_chrome(vb, log)
+                    vb = None
+        if browser is None:
+            browser = await p.chromium.launch(headless=True)
         try:
             for cfg in (auth_identities or []):
                 if not isinstance(cfg, dict):
                     continue
                 name = cfg.get("name") or cfg.get("username", "user")
                 role = cfg.get("role", "user")
+                ctx = None
                 try:
                     ctx = await browser.new_context()
                     ok, state, msg = await login(ctx, cfg, base_url, log)
@@ -236,14 +256,18 @@ async def _capture_identities_async(auth_identities: list, base_url: str, log):
                     if ok and state:
                         for ck in state.get("cookies", []):
                             if ck.get("name"):
-                                cookies[ck["name"]] = ck.get("value", "")
+                                cookies[ck.get("name")] = ck.get("value", "")
                     log(f"   identity '{name}' ({role}): {'OK' if ok else 'FAILED'} — {msg}")
                     if ok:
                         out.append(Identity(name=name, role=role, cookies=cookies,
                                             owned_resource_ids=cfg.get("owned_resource_ids", {}) or {}))
-                    await ctx.close()
                 except Exception as e:
                     log(f"   identity '{name}' login error: {e}")
+                finally:
+                    if ctx is not None:
+                        await ctx.close()
         finally:
-            await browser.close()
+            if owned and browser is not None:
+                await browser.close()
+            await asyncio.to_thread(release_visible_chrome, vb, log)
     return out

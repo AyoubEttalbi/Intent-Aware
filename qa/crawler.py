@@ -198,7 +198,8 @@ class QACrawler:
                  storage_state=None, artifacts_dir: str = ".qa_artifacts",
                  context: RunContext | None = None, auth: dict | None = None,
                  responsive: bool = True, engine: str = "chromium", log=print,
-                 deadline: float | None = None, concurrency: int = 4):
+                 deadline: float | None = None, concurrency: int = 4,
+                 watch: bool = False):
         self.base_url = (base_url or "").rstrip("/")
         self.description = description
         self.deadline = deadline   # time.monotonic() ceiling — crawl stops past it (opt-in)
@@ -207,6 +208,7 @@ class QACrawler:
         self.context = context or RunContext(target=self.base_url, description=description)
         self.auth = auth
         self.responsive = responsive
+        self.watch = watch
         self.engine = engine
         self.planner = QAPlanner(self.llm)
         self.judge = QAJudge(self.llm)
@@ -243,100 +245,134 @@ class QACrawler:
         os.makedirs(self.artifacts, exist_ok=True)
         async with async_playwright() as p:
             engine = getattr(p, self.engine, p.chromium)
-            browser = await engine.launch(headless=True)
-            ctx_args = {"storage_state": self.storage_state} if self.storage_state else {}
-            context = await browser.new_context(**ctx_args)
-
-            # --- Parallel crawl state (shared across worker pages) -------------
-            self._frontier = [_norm(self.base_url + "/")]
-            self._visited: set[str] = set()
-            self._n = 0
-            self._lock = asyncio.Lock()
-            # Bound concurrent claude subprocesses (~250 MB each) so the pool can't OOM.
-            self._llm_sema = asyncio.Semaphore(max(1, min(self.concurrency, 4)))
-
-            # One page + recorder per worker; ALL share the (authenticated) context,
-            # so cookies/session set by login apply to every worker.
-            n_workers = max(1, min(self.concurrency, self.max_pages))
-            pages, recs = [], []
-            for _ in range(n_workers):
-                pg = await context.new_page()
-                rc = EventRecorder()
-                rc.attach(pg)
-                pg.on("request", self._on_request)
-                pages.append(pg)
-                recs.append(rc)
-            self.log(f"🧭 QA crawl: {n_workers} parallel worker(s) exploring the UI ...")
-
-            # Seed the frontier from a fast link-harvest of the homepage (NO LLM) so
-            # every worker starts in parallel from t=0, instead of idling while page 1
-            # does its slow full LLM pass. The homepage is still fully processed below.
-            if n_workers > 1:
+            # Watch mode: drive the user's visible Windows Chrome over CDP.
+            # Fresh dedicated window per scan (never reuse, never touch other
+            # windows). owned=False skips browser.close(); release (terminate +
+            # profile rmtree) runs in the finally. Any failure degrades to
+            # headless; a scan never dies for a window.
+            from qa.visible_chrome import ensure_visible_chrome, release_visible_chrome
+            vb, browser, owned = None, None, True
+            if self.watch:
                 try:
-                    sp = pages[0]
-                    await sp.goto(_norm(self.base_url + "/"), wait_until="domcontentloaded", timeout=15000)
+                    vb = await asyncio.to_thread(ensure_visible_chrome, self.log)
+                except Exception as e:
+                    self.log(f"⚠️ visible browser probe failed ({e}); continuing headless.")
+                    vb = None
+                if vb is not None:
                     try:
-                        await sp.wait_for_load_state("networkidle", timeout=4000)
-                    except Exception:
-                        pass
-                    seed_model = await extract_page_model(sp)
-                    from urllib.parse import urljoin as _urljoin
-                    for lk in seed_model.get("links", []):
-                        if not DESTRUCTIVE.search(lk.get("text", "")):
-                            self._maybe_enqueue(lk.get("href", ""))
-                    for hint in seed_model.get("nav_hints", []):
-                        if hint and not DESTRUCTIVE.search(hint):
-                            self._maybe_enqueue(_urljoin(self.base_url + "/", hint))
+                        browser = await p.chromium.connect_over_cdp(vb.endpoint)
+                        owned = False
+                    except Exception as e:
+                        self.log(f"⚠️ visible browser refused CDP ({e}); continuing headless.")
+                        release_visible_chrome(vb, self.log)
+                        vb = None
+            if browser is None:
+                browser = await engine.launch(headless=True)
+            if self.watch and self.engine != "chromium":
+                self.log(f"   watch mode drives Chromium (engine={self.engine} kept for headless runs).")
+            ctx_args = {"storage_state": self.storage_state} if self.storage_state else {}
+            context = None
+            try:
+                context = await browser.new_context(**ctx_args)
+                await self._run_phases(context)
+            finally:
+                if context is not None:
+                    await context.close()
+                if owned and browser is not None:
+                    await browser.close()
+                await asyncio.to_thread(release_visible_chrome, vb, self.log)
+        return self.findings, self.shadow, self.artifacts
+
+    async def _run_phases(self, context):
+        """Crawl body (workers, phases, journeys). Closes live in run()'s finally."""
+        # --- Parallel crawl state (shared across worker pages) -------------
+        self._frontier = [_norm(self.base_url + "/")]
+        self._visited: set[str] = set()
+        self._n = 0
+        self._lock = asyncio.Lock()
+        # Bound concurrent claude subprocesses (~250 MB each) so the pool can't OOM.
+        self._llm_sema = asyncio.Semaphore(max(1, min(self.concurrency, 4)))
+
+        # One page + recorder per worker; ALL share the (authenticated) context,
+        # so cookies/session set by login apply to every worker.
+        n_workers = max(1, min(self.concurrency, self.max_pages))
+        pages, recs = [], []
+        for _ in range(n_workers):
+            pg = await context.new_page()
+            rc = EventRecorder()
+            rc.attach(pg)
+            pg.on("request", self._on_request)
+            pages.append(pg)
+            recs.append(rc)
+        self.log(f"🧭 QA crawl: {n_workers} parallel worker(s) exploring the UI ...")
+
+        # Seed the frontier from a fast link-harvest of the homepage (NO LLM) so
+        # every worker starts in parallel from t=0, instead of idling while page 1
+        # does its slow full LLM pass. The homepage is still fully processed below.
+        if n_workers > 1:
+            try:
+                sp = pages[0]
+                await sp.goto(_norm(self.base_url + "/"), wait_until="domcontentloaded", timeout=15000)
+                try:
+                    await sp.wait_for_load_state("networkidle", timeout=4000)
                 except Exception:
                     pass
+                seed_model = await extract_page_model(sp)
+                from urllib.parse import urljoin as _urljoin
+                for lk in seed_model.get("links", []):
+                    if not DESTRUCTIVE.search(lk.get("text", "")):
+                        self._maybe_enqueue(lk.get("href", ""))
+                for hint in seed_model.get("nav_hints", []):
+                    if hint and not DESTRUCTIVE.search(hint):
+                        self._maybe_enqueue(_urljoin(self.base_url + "/", hint))
+            except Exception:
+                pass
 
-            # Phase 1 — crawl + fuzz the PUBLIC / login surface anonymously first.
-            # Branch on `_uncapped` (the user's intent), NOT on max_pages: with a
-            # backstop applied, an "uncapped" run carries a large finite cap, and
-            # a third of that would burn the whole budget before we ever log in.
-            # The old one-liner `max(2, max_pages // 3)` was also a nan trap —
-            # `inf // 3` is nan and `max(2, nan)` returns 2, so "no cap" used to
-            # SHRINK the public pass to 2 pages.
-            if not self.auth:
-                anon_cap = self.max_pages
-            elif self._uncapped:
-                anon_cap = _UNCAPPED_ANON_PAGES   # short public pass, then log in
+        # Phase 1 — crawl + fuzz the PUBLIC / login surface anonymously first.
+        # Branch on `_uncapped` (the user's intent), NOT on max_pages: with a
+        # backstop applied, an "uncapped" run carries a large finite cap, and
+        # a third of that would burn the whole budget before we ever log in.
+        # The old one-liner `max(2, max_pages // 3)` was also a nan trap —
+        # `inf // 3` is nan and `max(2, nan)` returns 2, so "no cap" used to
+        # SHRINK the public pass to 2 pages.
+        if not self.auth:
+            anon_cap = self.max_pages
+        elif self._uncapped:
+            anon_cap = _UNCAPPED_ANON_PAGES   # short public pass, then log in
+        else:
+            anon_cap = max(2, self.max_pages // 3)
+        await self._crawl_phase(pages, recs, cap=anon_cap, authed=False)
+
+        # Log in once on the shared context, then re-seed for the authed pass.
+        logged_in = not bool(self.auth)
+        if self.auth and not logged_in:
+            if await self._do_login(context):
+                logged_in = True
+                self.log("🔓 authenticated — now crawling behind the login.")
+                seed = _norm(self.base_url + "/")
+                self._visited.discard(seed)
+                self._enqueued.discard(seed)
+                self._frontier.insert(0, seed)
             else:
-                anon_cap = max(2, self.max_pages // 3)
-            await self._crawl_phase(pages, recs, cap=anon_cap, authed=False)
+                self.log("   login did not succeed — continuing as anonymous.")
 
-            # Log in once on the shared context, then re-seed for the authed pass.
-            logged_in = not bool(self.auth)
-            if self.auth and not logged_in:
-                if await self._do_login(context):
-                    logged_in = True
-                    self.log("🔓 authenticated — now crawling behind the login.")
-                    seed = _norm(self.base_url + "/")
-                    self._visited.discard(seed)
-                    self._enqueued.discard(seed)
-                    self._frontier.insert(0, seed)
+        # Phase 2 — crawl the authenticated surface (up to max_pages total).
+        await self._crawl_phase(pages, recs, cap=self.max_pages,
+                                authed=bool(self.auth) and logged_in)
+
+        # Multi-step E2E journeys — reuse the (authenticated) context + site map.
+        if self.sitemap:
+            from qa.flows import FlowPlanner, run_journey
+            journeys = await asyncio.to_thread(
+                FlowPlanner(self.llm).plan, self.description, self.sitemap, self.context.brief())
+            for j in (journeys or [])[:3]:
+                self.log(f"🧪 E2E journey: {j.get('name', 'journey')}")
+                finding = await run_journey(context, j, self.base_url, self.log)
+                if finding:
+                    self._add(finding)
                 else:
-                    self.log("   login did not succeed — continuing as anonymous.")
+                    self.context.remember_fact(f"E2E journey '{j.get('name')}' passed")
 
-            # Phase 2 — crawl the authenticated surface (up to max_pages total).
-            await self._crawl_phase(pages, recs, cap=self.max_pages,
-                                    authed=bool(self.auth) and logged_in)
-
-            # Multi-step E2E journeys — reuse the (authenticated) context + site map.
-            if self.sitemap:
-                from qa.flows import FlowPlanner, run_journey
-                journeys = await asyncio.to_thread(
-                    FlowPlanner(self.llm).plan, self.description, self.sitemap, self.context.brief())
-                for j in (journeys or [])[:3]:
-                    self.log(f"🧪 E2E journey: {j.get('name', 'journey')}")
-                    finding = await run_journey(context, j, self.base_url, self.log)
-                    if finding:
-                        self._add(finding)
-                    else:
-                        self.context.remember_fact(f"E2E journey '{j.get('name')}' passed")
-
-            await context.close()
-            await browser.close()
         return self.findings, self.shadow, self.artifacts
 
     async def _crawl_phase(self, pages, recs, cap: int, authed: bool):
@@ -635,10 +671,11 @@ class QACrawler:
 def run_qa_crawl(base_url: str, description: str = "", llm: LLMClient | None = None,
                  max_pages: int = 25, storage_state=None, context: RunContext | None = None,
                  auth: dict | None = None, artifacts_dir: str = ".qa_artifacts", log=print,
-                 deadline: float | None = None, concurrency: int = 4):
+                 deadline: float | None = None, concurrency: int = 4,
+                 watch: bool = False):
     """Sync wrapper — runs the async crawler to completion. Returns (findings, shadow, artifacts_dir)."""
     crawler = QACrawler(base_url, description=description, llm=llm, max_pages=max_pages,
                         storage_state=storage_state, context=context, auth=auth,
                         artifacts_dir=artifacts_dir, log=log, deadline=deadline,
-                        concurrency=concurrency)
+                        concurrency=concurrency, watch=watch)
     return asyncio.run(crawler.run())
